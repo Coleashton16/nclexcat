@@ -1,456 +1,1096 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CatClex Admin | Command Center</title>
+    <title>AI Infinite NCLEX Engine</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/feather-icons"></script>
     
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
-                    colors: {
-                        glass: 'rgba(255, 255, 255, 0.03)',
-                        glassBorder: 'rgba(255, 255, 255, 0.08)',
-                    }
-                }
-            }
-        }
-    </script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-        
-        body {
-            background-color: #0f111a;
-            background-image: 
-                radial-gradient(at 0% 0%, hsla(253,16%,7%,1) 0, transparent 50%), 
-                radial-gradient(at 50% 0%, hsla(225,39%,30%,0.2) 0, transparent 50%), 
-                radial-gradient(at 100% 0%, hsla(339,49%,30%,0.2) 0, transparent 50%);
-            background-attachment: fixed;
-            color: #e2e8f0;
-        }
-
-        .glass-panel {
-            background: rgba(15, 23, 42, 0.6);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
-        }
-
-        .animate-fade-in { animation: fadeIn 0.5s ease-out forwards; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        
+        .animate-fade-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         .spinner { animation: spin 1s linear infinite; }
         @keyframes spin { 100% { transform: rotate(360deg); } }
+        
+        /* Modernized Pearson VUE NGN Font & Styling */
+        .nclex-font { font-family: Tahoma, Arial, Helvetica, sans-serif; }
+        .nclex-bg { background-color: #f3f4f6; } 
+        .nclex-header { background-color: #1A365D; color: white; border-bottom: 2px solid #0f172a; }
+        .nclex-footer { background-color: #ffffff; border-top: 1px solid #cbd5e1; }
+        
+        .nclex-btn-blue { 
+            background-color: #1A365D; 
+            color: white; 
+            border: 1px solid #0f172a; 
+            border-radius: 4px !important; 
+            transition: background-color 0.2s ease-in-out;
+            cursor: pointer;
+        }
+        .nclex-btn-blue:hover { background-color: #1e40af; }
+        
+        .nclex-btn-disabled { 
+            background-color: #f1f5f9; 
+            color: #94a3b8; 
+            border: 1px solid #cbd5e1; 
+            cursor: not-allowed; 
+            border-radius: 4px !important;
+        }
 
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
-
-        /* Toast Animation */
-        .toast-enter { animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-        .toast-exit { animation: slideOut 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-        @keyframes slideOut { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
+        .nclex-input-box {
+            border: 1px solid #cbd5e1;
+            background-color: white;
+            border-radius: 4px !important;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
+        }
+        
+        /* Custom scrollbar for clinical realism */
+        ::-webkit-scrollbar { width: 12px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; border-left: 1px solid #ccc; }
+        ::-webkit-scrollbar-thumb { background: #c1c1c1; border: 1px solid #999; }
+        ::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
     </style>
 </head>
-<body class="min-h-screen flex flex-col font-sans antialiased selection:bg-indigo-500/30">
+<body class="nclex-bg text-black nclex-font min-h-screen flex flex-col">
 
     <div id="app" class="flex-grow flex flex-col relative z-10"></div>
     
-    <!-- Toast Notification Container -->
-    <div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-3"></div>
+    <!-- Custom Modal Container -->
+    <div id="modal-container" class="fixed inset-0 z-50 hidden bg-black/60 flex items-center justify-center p-4 opacity-0 transition-opacity duration-200">
+        <div id="modal-content" class="bg-white border-2 border-black max-w-md w-full p-6 transform scale-95 transition-transform duration-200 shadow-2xl">
+            <!-- Modal injected here -->
+        </div>
+    </div>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
-        import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, getDocs, query, orderBy } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+        import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-analytics.js";
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, addDoc, getDocs, query, orderBy } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
-        // Same Firebase Config as main app
         const firebaseConfig = {
             apiKey: "AIzaSyA_kK3OVsj9AkIS3cDzEMeRXDvXlcRG9L8",
             authDomain: "catclex.firebaseapp.com",
             projectId: "catclex",
             storageBucket: "catclex.firebasestorage.app",
             messagingSenderId: "966297687447",
-            appId: "1:966297687447:web:189a306f23375c8a68a0d2"
+            appId: "1:966297687447:web:189a306f23375c8a68a0d2",
+            measurementId: "G-4V1QLVL4RF"
         };
 
         const app = initializeApp(firebaseConfig);
+        const analytics = getAnalytics(app);
         const auth = getAuth(app);
         const db = getFirestore(app);
 
-        window.AdminState = {
-            view: 'loading',
+        // Map AppState and Functions to window so inline HTML onclick handlers work
+        window.AppState = {
+            view: 'loading', 
+            examSession: null,
+            pastExams: [],
+            timerInterval: null,
+            verificationPollInterval: null, 
+            openRouterKey: '',
+            aiModel: '', 
+            isGenerating: false,
             user: null,
-            usersList: [],
-            engineConfig: { apikey: '', slugs: '' },
-            stats: { total: 0, pending: 0 }
+            isVerified: false,
+            authMode: 'login'
         };
 
-        // --- TOAST NOTIFICATIONS ---
-        window.showToast = (message, type = 'success') => {
-            const container = document.getElementById('toast-container');
-            const toast = document.createElement('div');
-            const icon = type === 'success' ? 'check-circle' : 'alert-circle';
-            const colorClass = type === 'success' ? 'text-emerald-400 border-emerald-500/30' : 'text-rose-400 border-rose-500/30';
-            
-            toast.className = `glass-panel border-l-4 ${colorClass} px-4 py-3 rounded-r-lg shadow-lg flex items-center gap-3 toast-enter min-w-[250px]`;
-            toast.innerHTML = `
-                <i data-feather="${icon}" class="w-5 h-5"></i>
-                <span class="text-sm font-medium text-white">${message}</span>
-            `;
-            
-            container.appendChild(toast);
-            feather.replace();
+        const STARTING_SE = 1.0; 
+        const MIN_QUESTIONS = 85;  // 2026 Official Minimum
+        const MAX_QUESTIONS = 150; // 2026 Official Maximum
+        const PASS_LOGIT_THRESHOLD = 0.0;
+        const FAIL_LOGIT_THRESHOLD = -0.5;
 
-            setTimeout(() => {
-                toast.classList.replace('toast-enter', 'toast-exit');
-                setTimeout(() => toast.remove(), 300);
-            }, 3000);
-        };
+        // 2026 WEIGHTED CLIENT NEEDS CATEGORIES
+        const CLIENT_NEEDS = [
+            { category: "Management of Care", weight: 18 },
+            { category: "Safety and Infection Prevention and Control", weight: 13 }, // 2026 Title Update
+            { category: "Health Promotion and Maintenance", weight: 9 },
+            { category: "Psychosocial Integrity", weight: 9 },
+            { category: "Basic Care and Comfort", weight: 9 },
+            { category: "Pharmacological and Parenteral Therapies", weight: 16 },
+            { category: "Reduction of Risk Potential", weight: 12 },
+            { category: "Physiological Adaptation", weight: 14 }
+        ];
 
-        // --- AUTH OBSERVER ---
+        // Custom function to select category based on 2026 official weights
+        function getWeightedCategory() {
+            let sum = 0;
+            let r = Math.random() * 100;
+            for (let i = 0; i < CLIENT_NEEDS.length; i++) {
+                sum += CLIENT_NEEDS[i].weight;
+                if (r <= sum) return CLIENT_NEEDS[i].category;
+            }
+            return CLIENT_NEEDS[0].category; // Fallback
+        }
+
         onAuthStateChanged(auth, async (user) => {
             if (user) {
+                window.AppState.user = user;
+                window.AppState.view = 'loading';
+                window.renderApp();
+
                 try {
-                    // Secretly pull the allowed admin email from the server (or fallback to the hardcoded one)
-                    const adminConfigSnap = await getDoc(doc(db, 'engine', 'adminConfig'));
-                    let allowedEmail = 'cashton858@gmail.com'; 
+                    const userDocRef = doc(db, 'users', user.uid);
+                    const userDocSnap = await getDoc(userDocRef);
                     
-                    if (adminConfigSnap.exists() && adminConfigSnap.data().adminEmail) {
-                        allowedEmail = adminConfigSnap.data().adminEmail;
+                    if (userDocSnap.exists() && userDocSnap.data().verified === true) {
+                        window.AppState.isVerified = true;
+                        await fetchEngineConfig();
+                        await fetchPastExams();
+                        window.AppState.view = 'dashboard';
+                    } else {
+                        window.AppState.isVerified = false;
+                        window.AppState.view = 'pending';
+                        startVerificationPolling(user.uid);
                     }
-
-                    // Strict Gateway: If a normal student tries to access the admin portal, instantly boot them.
-                    if (user.email !== allowedEmail) {
-                        await signOut(auth);
-                        window.AdminState.user = null;
-                        window.AdminState.view = 'login';
-                        window.renderApp();
-                        return;
-                    }
-
-                    window.AdminState.user = user;
-                    window.AdminState.view = 'dashboard';
-                    await loadAdminData();
                 } catch (e) {
                     console.error("Auth check error:", e);
+                    window.showModal("Database Error", "Failed to verify account status.", "error");
                     await signOut(auth);
-                    window.AdminState.user = null;
-                    window.AdminState.view = 'login';
-                    window.renderApp();
                 }
             } else {
-                window.AdminState.user = null;
-                window.AdminState.view = 'login';
-                window.renderApp();
+                window.AppState.user = null;
+                window.AppState.isVerified = false;
+                window.AppState.view = 'auth';
+                if (window.AppState.verificationPollInterval) {
+                    clearInterval(window.AppState.verificationPollInterval);
+                }
             }
+            window.renderApp();
         });
 
-        window.handleLogin = async (e) => {
-            e.preventDefault();
-            const email = document.getElementById('admin-email').value;
-            const pass = document.getElementById('admin-pass').value;
-            const btn = document.getElementById('login-btn');
-            
-            btn.innerHTML = '<i data-feather="loader" class="w-5 h-5 spinner mx-auto"></i>';
-            btn.disabled = true;
-
-            try {
-                // Rely on Firebase to securely verify the password stored on the server
-                await signInWithEmailAndPassword(auth, email, pass);
+        function startVerificationPolling(uid) {
+            if (window.AppState.verificationPollInterval) {
+                clearInterval(window.AppState.verificationPollInterval);
+            }
+            window.AppState.verificationPollInterval = setInterval(async () => {
+                if (window.AppState.view !== 'pending') {
+                    clearInterval(window.AppState.verificationPollInterval);
+                    return;
+                }
                 
-                // Note: We don't show the success toast here yet, because the onAuthStateChanged 
-                // observer will catch the login and do the secret email check first.
+                try {
+                    const userDocSnap = await getDoc(doc(db, 'users', uid));
+                    if (userDocSnap.exists() && userDocSnap.data().verified === true) {
+                        clearInterval(window.AppState.verificationPollInterval);
+                        window.AppState.isVerified = true;
+                        
+                        await fetchEngineConfig();
+                        await fetchPastExams();
+                        
+                        window.AppState.view = 'dashboard';
+                        window.renderApp();
+                    }
+                } catch (e) {
+                    console.error("Verification polling error:", e);
+                }
+            }, 3000);
+        }
+
+        async function fetchEngineConfig() {
+            try {
+                const apikeySnap = await getDoc(doc(db, 'engine', 'apikey'));
+                const slugsSnap = await getDoc(doc(db, 'engine', 'slugs'));
+                
+                if (apikeySnap.exists()) window.AppState.openRouterKey = apikeySnap.data().apikey || apikeySnap.data().string;
+                if (slugsSnap.exists()) window.AppState.aiModel = slugsSnap.data().slugs || slugsSnap.data().string;
+                
+            } catch (e) {
+                console.error("Error fetching engine config:", e);
+            }
+        }
+
+        async function fetchPastExams() {
+            try {
+                const q = query(collection(db, 'users', window.AppState.user.uid, 'exams'), orderBy('endTime', 'desc'));
+                const snap = await getDocs(q);
+                const exams = [];
+                snap.forEach(doc => {
+                    const data = doc.data();
+                    if(data.endTime && data.endTime.toDate) data.endTime = data.endTime.toDate();
+                    exams.push(data);
+                });
+                window.AppState.pastExams = exams;
+            } catch(e) {
+                console.error("Error fetching past exams", e);
+            }
+        }
+
+        function calculateStruggleAreas() {
+            let stats = {};
+            window.AppState.pastExams.forEach(exam => {
+                exam.history.forEach(h => {
+                    if(!stats[h.category]) stats[h.category] = { total: 0, points: 0 };
+                    stats[h.category].total++;
+                    stats[h.category].points += h.score; // uses decimal score
+                });
+            });
+            
+            let arr = Object.keys(stats).map(cat => {
+                const pct = Math.round((stats[cat].points / stats[cat].total) * 100);
+                return { category: cat, pct: pct, ...stats[cat] };
+            });
+            arr.sort((a, b) => a.pct - b.pct);
+            return arr;
+        }
+
+        window.showModal = (title, message, type = 'info', onConfirm = null) => {
+            const container = document.getElementById('modal-container');
+            const content = document.getElementById('modal-content');
+            
+            let icon = '<i data-feather="info" class="w-8 h-8 text-blue-800"></i>';
+            let buttons = `<button onclick="closeModal()" class="w-full nclex-btn-blue px-4 py-2 font-bold">OK</button>`;
+            
+            if (type === 'error') {
+                icon = '<i data-feather="alert-triangle" class="w-8 h-8 text-red-700"></i>';
+                buttons = `<button onclick="closeModal()" class="w-full bg-red-700 text-white px-4 py-2 border-2 border-black font-bold">Understood</button>`;
+            } else if (type === 'confirm') {
+                icon = '<i data-feather="help-circle" class="w-8 h-8 text-amber-600"></i>';
+                buttons = `
+                    <button onclick="closeModal()" class="flex-1 bg-gray-300 text-black border-2 border-black px-4 py-2 font-bold">Cancel</button>
+                    <button id="modal-confirm-btn" class="flex-1 bg-amber-600 text-white border-2 border-black px-4 py-2 font-bold">Confirm</button>
+                `;
+            }
+
+            content.innerHTML = `
+                <div class="flex flex-col items-center text-center">
+                    <div class="mb-4">${icon}</div>
+                    <h3 class="text-xl font-bold text-black mb-2">${title}</h3>
+                    <p class="text-gray-800 mb-6">${message}</p>
+                    <div class="flex gap-3 w-full">${buttons}</div>
+                </div>
+            `;
+            
+            feather.replace();
+            container.classList.remove('hidden');
+            setTimeout(() => {
+                container.classList.remove('opacity-0');
+                content.classList.remove('scale-95');
+            }, 10);
+
+            if (type === 'confirm' && onConfirm) {
+                document.getElementById('modal-confirm-btn').onclick = () => {
+                    window.closeModal();
+                    onConfirm();
+                };
+            }
+        };
+
+        window.closeModal = () => {
+            const container = document.getElementById('modal-container');
+            const content = document.getElementById('modal-content');
+            container.classList.add('opacity-0');
+            content.classList.add('scale-95');
+            setTimeout(() => { container.classList.add('hidden'); }, 200); 
+        };
+
+        window.toggleAuthMode = () => {
+            window.AppState.authMode = window.AppState.authMode === 'login' ? 'signup' : 'login';
+            window.renderApp();
+        };
+
+        window.handleAuth = async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('auth-email').value;
+            const pass = document.getElementById('auth-pass').value;
+
+            if (window.AppState.authMode === 'signup') {
+                const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,12}$/;
+                if (!passwordRegex.test(pass)) {
+                    window.showModal("Invalid Password", "Password must be 6 to 12 characters and include at least one uppercase letter, one lowercase letter, one number, and one special character.", "error");
+                    return;
+                }
+                try {
+                    const cred = await createUserWithEmailAndPassword(auth, email, pass);
+                    await setDoc(doc(db, 'users', cred.user.uid), {
+                        email: email,
+                        verified: false,
+                        createdAt: new Date()
+                    });
+                } catch (err) {
+                    window.showModal("Signup Error", err.message, "error");
+                }
+            } else {
+                try {
+                    await signInWithEmailAndPassword(auth, email, pass);
+                } catch (err) {
+                    window.showModal("Login Error", "Invalid credentials or account does not exist.", "error");
+                }
+            }
+        };
+
+        window.handleGoogleAuth = async () => {
+            try {
+                const provider = new GoogleAuthProvider();
+                const cred = await signInWithPopup(auth, provider);
+                const userDocRef = doc(db, 'users', cred.user.uid);
+                const userDocSnap = await getDoc(userDocRef);
+                
+                if (!userDocSnap.exists()) {
+                    await setDoc(userDocRef, {
+                        email: cred.user.email,
+                        verified: false,
+                        createdAt: new Date()
+                    });
+                }
             } catch (err) {
-                // Generic error so malicious users don't know if the email exists or not
-                window.showToast("Invalid credentials or unauthorized access.", "error");
-                btn.innerHTML = 'Access Portal';
-                btn.disabled = false;
+                window.showModal("Google Sign-In Error", err.message, "error");
             }
         };
 
         window.logout = async () => {
+            if (window.AppState.verificationPollInterval) {
+                clearInterval(window.AppState.verificationPollInterval);
+            }
             await signOut(auth);
         };
 
-        // --- DATA FETCHING ---
-        async function loadAdminData() {
-            try {
-                // Fetch Users
-                const usersSnap = await getDocs(query(collection(db, 'users'), orderBy('createdAt', 'desc')));
-                const users = [];
-                let pendingCount = 0;
+        const calculateProbability = (ability, difficulty) => {
+          const exponent = ability - difficulty;
+          return Math.exp(exponent) / (1 + Math.exp(exponent));
+        };
 
-                usersSnap.forEach(doc => {
-                    const data = doc.data();
-                    if(data.createdAt && data.createdAt.toDate) data.createdAt = data.createdAt.toDate();
-                    users.push({ uid: doc.id, ...data });
-                    if(data.verified === false) pendingCount++;
+        const updateAbility = (currentAbility, difficulty, scoreDecimal) => {
+          const probCorrect = calculateProbability(currentAbility, difficulty);
+          const stepSize = 0.5; 
+          // Uses scoreDecimal (0.0 to 1.0) for +/- NGN partial credit weighting
+          return currentAbility + (stepSize * (scoreDecimal - probCorrect));
+        };
+
+        async function generateNextQuestion(targetDifficulty, retries = 0) {
+            window.AppState.isGenerating = true;
+            window.renderApp();
+
+            const targetCategory = getWeightedCategory();
+            
+            // 2026 Specialty Sub-focus Wheel to guarantee diverse clinical settings
+            const specialties = [
+                "Pediatrics (Peds)", 
+                "Obstetrics and Maternity (OB/GYN)", 
+                "Medical-Surgical (Adult)", 
+                "Psychiatric and Mental Health", 
+                "Critical Care / ICU / Emergency", 
+                "Geriatrics / End of Life Care",
+                "Community Health / Equity Focus",
+                "Rare or Complex Disease Management"
+            ];
+            const randomSpecialty = specialties[Math.floor(Math.random() * specialties.length)];
+
+            const formatPool = [
+                "mc_standard", "mc_standard", "mc_standard", "mc_standard", "mc_standard", "mc_standard",
+                "sata_standard", "sata_standard", "sata_standard", "sata_standard", "sata_standard", "sata_standard",
+                "mc_ehr", "mc_ehr", "mc_ehr",
+                "sata_ehr", "sata_ehr",
+                "bowtie", "bowtie",
+                "highlight"
+            ];
+            const selectedFormat = formatPool[Math.floor(Math.random() * formatPool.length)];
+            
+            let promptInstructions = "";
+            let jsonSchema = "";
+
+            if (selectedFormat === "mc_standard" || selectedFormat === "sata_standard") {
+                const typeCode = selectedFormat.split('_')[0];
+                promptInstructions = `Generate a standard, complex NCLEX clinical scenario. DO NOT use an EHR or charting format. Focus on clinical judgment, prioritization, or delegation.`;
+                jsonSchema = `{
+                    "id": "gen_${Date.now()}",
+                    "type": "${typeCode}",
+                    "category": "${targetCategory}",
+                    "difficulty": ${targetDifficulty.toFixed(2)},
+                    "text": "The clinical scenario paragraph followed by the question...",
+                    "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+                    "correct": [int], // 0-indexed correct array (multiple if sata)
+                    "rationale": "Clinical explanation."
+                }`;
+            } 
+            else if (selectedFormat === "mc_ehr" || selectedFormat === "sata_ehr") {
+                const typeCode = selectedFormat.split('_')[0];
+                promptInstructions = `Generate an NGN Unfolding Case Study scenario. Incorporate a timeline of events (e.g., 0800, 1000, 1200) simulating an evolving clinical situation. Include Nurses Notes, Vitals, and/or Labs.`;
+                jsonSchema = `{
+                    "id": "gen_${Date.now()}",
+                    "type": "${typeCode}",
+                    "category": "${targetCategory}",
+                    "difficulty": ${targetDifficulty.toFixed(2)},
+                    "text": "EHR Notes:\\n0800: Client admitted...\\n1000: Condition changes...\\n\\nVitals:\\nBP 90/60...\\n\\nQuestion: Which action should the nurse take first based on the 1000 assessment?",
+                    "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+                    "correct": [int], // 0-indexed correct array
+                    "rationale": "Clinical explanation."
+                }`;
+            }
+            else if (selectedFormat === "bowtie") {
+                promptInstructions = `Generate a complex NGN Bowtie format. Provide an unfolding EHR scenario that leads to the required diagram completion.`;
+                jsonSchema = `{
+                    "id": "gen_${Date.now()}",
+                    "type": "bowtie",
+                    "category": "${targetCategory}",
+                    "difficulty": ${targetDifficulty.toFixed(2)},
+                    "text": "Clinical EHR scenario...",
+                    "bowtie_data": {
+                        "actions": ["Action 1", "Action 2", "Action 3", "Action 4"],
+                        "condition": ["Condition A", "Condition B", "Condition C", "Condition D"],
+                        "parameters": ["Monitor 1", "Monitor 2", "Monitor 3", "Monitor 4"],
+                        "correct_actions": [int, int], // exactly two 0-indexed integers
+                        "correct_condition": [int], // exactly one 0-indexed integer
+                        "correct_parameters": [int, int] // exactly two 0-indexed integers
+                    },
+                    "rationale": "Clinical explanation."
+                }`;
+            }
+            else if (selectedFormat === "highlight") {
+                promptInstructions = `Generate an NGN Highlight item. The 'text' must be the instructions. The 'options' array must represent consecutive sentences/phrases that form a single clinical paragraph. The user will click these sentences to highlight them.`;
+                jsonSchema = `{
+                    "id": "gen_${Date.now()}",
+                    "type": "highlight",
+                    "category": "${targetCategory}",
+                    "difficulty": ${targetDifficulty.toFixed(2)},
+                    "text": "Read the clinical scenario. Click to highlight the findings that require immediate intervention.",
+                    "options": ["A 45-year-old client is admitted with heart failure. ", "The client reports a sudden onset of a severe, tearing chest pain. ", "The heart rate is 88 bpm. ", "The blood pressure is 210/110 mmHg. "],
+                    "correct": [1, 3], // The 0-indexed indices of the correct sentences to highlight
+                    "rationale": "Clinical explanation."
+                }`;
+            }
+
+            const finalPrompt = `
+            You are an expert NCSBN 2026 Next Generation NCLEX (NGN) Item Writer.
+            Target Item Response Theory (IRT) difficulty: ${targetDifficulty.toFixed(2)} (-3.0 easy to +3.0 very hard).
+            NCLEX 2026 Client Needs Category: ${targetCategory}.
+            Clinical Specialty Context: ${randomSpecialty}.
+
+            INSTRUCTIONS:
+            ${promptInstructions}
+            Ensure the patient demographic and clinical scenario heavily reflect the assigned Clinical Specialty Context (${randomSpecialty}).
+            Per the 2026 NCSBN Test Plan, integrate concepts of unbiased care, health equity, gender identity, and patient dignity into the scenario where clinically appropriate. Use modernized 2026 terminology (e.g. "substance misuse" instead of "substance abuse").
+            Test clinical judgment, safe decision-making, and prioritization using the NCJMM model.
+            Distractors MUST be clinically plausible but definitively incorrect.
+
+            OUTPUT FORMAT:
+            You must output ONLY a valid JSON object matching this exact schema. No markdown backticks, no conversational text.
+            ${jsonSchema}
+            `;
+
+            const requestBody = {
+                messages: [
+                    { role: "system", content: "You are a strict data formatting machine. You output valid JSON only." },
+                    { role: "user", content: finalPrompt }
+                ]
+            };
+
+            const modelsList = window.AppState.aiModel.split(',').map(m => m.trim()).filter(m => m !== '');
+            if (modelsList.length > 1) {
+                requestBody.models = modelsList; 
+            } else {
+                requestBody.model = modelsList[0] || 'google/gemma-2-9b-it:free';
+            }
+
+            try {
+                const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${window.AppState.openRouterKey}`,
+                        "HTTP-Referer": window.location.href, 
+                        "X-Title": "Infinite NCLEX Engine",
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(requestBody)
                 });
 
-                window.AdminState.usersList = users;
-                window.AdminState.stats.total = users.length;
-                window.AdminState.stats.pending = pendingCount;
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData?.error?.message || `OpenRouter Error Code: ${response.status}`);
+                }
 
-                // Fetch Engine Config
-                const apikeySnap = await getDoc(doc(db, 'engine', 'apikey'));
-                const slugsSnap = await getDoc(doc(db, 'engine', 'slugs'));
+                const data = await response.json();
+                let jsonString = data.choices[0].message.content.trim();
                 
-                if (apikeySnap.exists()) window.AdminState.engineConfig.apikey = apikeySnap.data().apikey || apikeySnap.data().string || '';
-                if (slugsSnap.exists()) window.AdminState.engineConfig.slugs = slugsSnap.data().slugs || slugsSnap.data().string || '';
+                const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
+                if (!jsonMatch) throw new Error("The AI model failed to format the output as JSON.");
+                
+                const generatedQuestion = JSON.parse(jsonMatch[0]);
+                
+                if(selectedFormat.includes('mc')) generatedQuestion.type = 'mc';
+                if(selectedFormat.includes('sata')) generatedQuestion.type = 'sata';
 
+                try {
+                    const diffLevel = Number(generatedQuestion.difficulty).toFixed(1); 
+                    await setDoc(doc(db, 'questions', diffLevel, 'bank', generatedQuestion.id), generatedQuestion);
+                } catch (uploadError) {
+                    console.error("Failed to upload harvested question to cloud bank:", uploadError);
+                }
+                
+                window.AppState.examSession.currentQuestion = generatedQuestion;
+                
+                if (generatedQuestion.type === 'bowtie') {
+                    window.AppState.examSession.selectedAnswers = { actions: [], condition: [], parameters: [] };
+                } else {
+                    window.AppState.examSession.selectedAnswers = [];
+                }
+                
+                window.AppState.isGenerating = false;
                 window.renderApp();
+
             } catch (error) {
-                console.error("Error loading data:", error);
-                window.showToast("Failed to load database data. Check permissions.", "error");
+                console.error("AI Generation Error:", error);
+                if (retries < 3) {
+                    console.warn(`Silently retrying generation... Attempt ${retries + 1} of 3`);
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                    return generateNextQuestion(targetDifficulty, retries + 1);
+                }
+                window.showModal("API Connection Failed", `Error: ${error.message}. OpenRouter models are failing.`, "error");
+                window.AppState.isGenerating = false;
+                window.forceExitExam(); 
             }
         }
 
-        // --- ADMIN ACTIONS ---
-        window.toggleVerification = async (uid, currentStatus) => {
-            try {
-                const newStatus = !currentStatus;
-                await updateDoc(doc(db, 'users', uid), { verified: newStatus });
-                
-                // Update local state to immediately reflect changes without a full reload
-                const userIndex = window.AdminState.usersList.findIndex(u => u.uid === uid);
-                if(userIndex > -1) {
-                    window.AdminState.usersList[userIndex].verified = newStatus;
-                    window.AdminState.stats.pending += newStatus ? -1 : 1;
-                }
-                
-                window.showToast(`User ${newStatus ? 'Approved' : 'Revoked'} successfully!`);
-                window.renderApp();
-            } catch (err) {
-                window.showToast("Failed to update user.", "error");
+        window.startNewExam = async () => {
+            if (!window.AppState.openRouterKey) {
+                window.showModal("System Offline", "The AI Engine configurations (API key or Slugs) were not found in the database. Please contact the administrator.", "error");
+                return;
             }
-        };
 
-        window.saveEngineConfig = async () => {
-            const btn = document.getElementById('save-config-btn');
-            btn.innerHTML = '<i data-feather="loader" class="w-4 h-4 spinner"></i> Saving...';
+            window.AppState.examSession = {
+                questionsAsked: [],
+                history: [],
+                currentAbility: 0.0,
+                standardError: STARTING_SE,
+                startTime: new Date(),
+                status: 'in-progress',
+                currentQuestion: null,
+                selectedAnswers: [], 
+                timeRemaining: 5 * 60 * 60,
+            };
+            window.AppState.view = 'exam';
+            window.renderApp();
             
-            const newKey = document.getElementById('config-apikey').value;
-            const newSlugs = document.getElementById('config-slugs').value;
+            if (window.AppState.timerInterval) clearInterval(window.AppState.timerInterval);
+            window.AppState.timerInterval = setInterval(window.timerTick, 1000);
 
-            try {
-                // Save to Firestore using the exact paths your app expects
-                await setDoc(doc(db, 'engine', 'apikey'), { apikey: newKey, string: newKey });
-                await setDoc(doc(db, 'engine', 'slugs'), { slugs: newSlugs, string: newSlugs });
+            await generateNextQuestion(0.0);
+        };
+
+        window.timerTick = () => {
+            if (window.AppState.view !== 'exam' || !window.AppState.examSession || window.AppState.examSession.status !== 'in-progress') {
+                clearInterval(window.AppState.timerInterval);
+                return;
+            }
+            window.AppState.examSession.timeRemaining -= 1;
+            if (window.AppState.examSession.timeRemaining <= 0) {
+                clearInterval(window.AppState.timerInterval);
+                finishExam(window.AppState.examSession.currentAbility > 0 ? 'pass' : 'fail');
+                return;
+            }
+            const timerEl = document.getElementById('exam-timer');
+            if (timerEl) timerEl.innerText = formatTime(window.AppState.examSession.timeRemaining);
+        };
+
+        function formatTime(seconds) {
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = seconds % 60;
+            return `${h > 0 ? h + ':' : ''}${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        }
+
+        window.toggleAnswer = (index, bowtieSection = null) => {
+            const session = window.AppState.examSession;
+            const qType = session.currentQuestion.type;
+
+            if (qType === 'mc') {
+                session.selectedAnswers = [index];
+            } 
+            else if (qType === 'sata' || qType === 'highlight') {
+                const current = [...session.selectedAnswers];
+                if (current.includes(index)) {
+                    session.selectedAnswers = current.filter(i => i !== index);
+                } else {
+                    session.selectedAnswers.push(index);
+                }
+            } 
+            else if (qType === 'bowtie' && bowtieSection) {
+                const maxAllowed = bowtieSection === 'condition' ? 1 : 2;
+                const current = [...session.selectedAnswers[bowtieSection]];
                 
-                window.AdminState.engineConfig.apikey = newKey;
-                window.AdminState.engineConfig.slugs = newSlugs;
+                if (current.includes(index)) {
+                    session.selectedAnswers[bowtieSection] = current.filter(i => i !== index);
+                } else {
+                    if (current.length < maxAllowed) {
+                        session.selectedAnswers[bowtieSection].push(index);
+                    } else {
+                        current.shift();
+                        current.push(index);
+                        session.selectedAnswers[bowtieSection] = current;
+                    }
+                }
+            }
+            window.renderExamOptions();
+        };
+
+        window.handleNextQuestion = async () => {
+            const session = window.AppState.examSession;
+            const q = session.currentQuestion;
+            
+            let canSubmit = false;
+            let scoreDecimal = 0.0; // 0.0 to 1.0 (for partial credit)
+
+            if (q.type === 'mc') {
+                if (session.selectedAnswers.length === 0) return;
+                canSubmit = true;
+                if (session.selectedAnswers[0] === q.correct[0]) scoreDecimal = 1.0;
+            } 
+            else if (q.type === 'sata' || q.type === 'highlight') {
+                if (session.selectedAnswers.length === 0) return;
+                canSubmit = true;
                 
-                window.showToast("Engine Configuration Updated!");
-            } catch (err) {
-                window.showToast("Failed to save configuration.", "error");
-            } finally {
-                btn.innerHTML = '<i data-feather="save" class="w-4 h-4"></i> Save Configuration';
-                feather.replace();
+                // NGN +/- Partial Credit Scoring logic
+                const totalCorrectOptions = q.correct.length;
+                let userCorrectHits = 0;
+                let userIncorrectHits = 0;
+
+                session.selectedAnswers.forEach(ans => {
+                    if (q.correct.includes(ans)) userCorrectHits++;
+                    else userIncorrectHits++;
+                });
+
+                // Points earned = (Correct Hits) - (Incorrect Hits), min 0
+                let rawScore = userCorrectHits - userIncorrectHits;
+                if (rawScore < 0) rawScore = 0;
+                
+                scoreDecimal = rawScore / totalCorrectOptions;
+            } 
+            else if (q.type === 'bowtie') {
+                if (session.selectedAnswers.actions.length === 2 && 
+                    session.selectedAnswers.condition.length === 1 && 
+                    session.selectedAnswers.parameters.length === 2) {
+                    canSubmit = true;
+                    
+                    let points = 0;
+                    session.selectedAnswers.actions.forEach(a => { if(q.bowtie_data.correct_actions.includes(a)) points++; });
+                    if (session.selectedAnswers.condition[0] === q.bowtie_data.correct_condition[0]) points++;
+                    session.selectedAnswers.parameters.forEach(p => { if(q.bowtie_data.correct_parameters.includes(p)) points++; });
+                    
+                    scoreDecimal = points / 5.0; // 5 total points possible on bowtie
+                } else {
+                    return;
+                }
+            }
+
+            if (!canSubmit) return;
+
+            const newAbility = updateAbility(session.currentAbility, q.difficulty, scoreDecimal);
+            // Slower SE drop to accommodate 85+ questions
+            const newSE = Math.max(0.15, session.standardError - 0.03); 
+
+            session.history.push({
+                qId: q.id,
+                difficulty: q.difficulty,
+                score: scoreDecimal,
+                isCorrect: scoreDecimal === 1.0, 
+                abilityAfter: newAbility,
+                category: q.category,
+                text: q.text,
+                rationale: q.rationale 
+            });
+            session.questionsAsked.push(q.id);
+            session.currentAbility = newAbility;
+            session.standardError = newSE;
+
+            let examComplete = false;
+            let finalStatus = 'in-progress';
+
+            if (session.questionsAsked.length >= MIN_QUESTIONS) {
+                if (newAbility - newSE > PASS_LOGIT_THRESHOLD) { examComplete = true; finalStatus = 'pass'; } 
+                else if (newAbility + newSE < FAIL_LOGIT_THRESHOLD) { examComplete = true; finalStatus = 'fail'; }
+            }
+
+            if (session.questionsAsked.length >= MAX_QUESTIONS) {
+                examComplete = true;
+                finalStatus = newAbility > 0 ? 'pass' : 'fail';
+            }
+
+            if (examComplete) {
+                finishExam(finalStatus);
+            } else {
+                await generateNextQuestion(newAbility);
             }
         };
 
-        // --- RENDERING VIEWS ---
+        async function finishExam(status) {
+            window.AppState.examSession.status = status;
+            window.AppState.examSession.endTime = new Date();
+            
+            try {
+                await addDoc(collection(db, 'users', window.AppState.user.uid, 'exams'), window.AppState.examSession);
+                await fetchPastExams(); 
+            } catch (e) {
+                console.error("Failed to save exam to cloud:", e);
+            }
+
+            window.AppState.view = 'results';
+            clearInterval(window.AppState.timerInterval);
+            window.renderApp();
+        }
+
+        window.requestExitExam = () => {
+            window.showModal("End Exam", "Are you sure you want to end your current exam session? Progress will not be saved.", "confirm", window.forceExitExam);
+        };
+
+        window.forceExitExam = () => {
+            window.AppState.view = 'dashboard';
+            clearInterval(window.AppState.timerInterval);
+            window.AppState.examSession = null;
+            window.renderApp();
+        };
+
         function renderLoading() {
             return `
-            <div class="flex-grow flex flex-col items-center justify-center animate-fade-in">
-                <div class="relative w-20 h-20">
-                    <div class="absolute inset-0 border-4 border-indigo-500/20 rounded-full"></div>
-                    <div class="absolute inset-0 border-4 border-indigo-500 border-t-transparent rounded-full spinner"></div>
-                </div>
-                <h2 class="mt-6 text-xl font-medium text-slate-300 tracking-widest uppercase text-sm">Establishing Secure Connection</h2>
+            <div class="min-h-screen nclex-bg flex flex-col items-center justify-center p-4">
+                <div class="w-12 h-12 border-4 border-[#1A365D] border-t-transparent rounded-full spinner mb-4"></div>
+                <h2 class="text-xl font-bold text-[#1A365D]">Connecting to CatClex Secure Servers...</h2>
             </div>`;
         }
 
-        function renderLogin() {
+        function renderAuth() {
+            const isLogin = window.AppState.authMode === 'login';
             return `
-            <div class="flex-grow flex items-center justify-center p-4 animate-fade-in">
-                <div class="glass-panel p-8 rounded-2xl w-full max-w-md relative overflow-hidden">
-                    <!-- Decorative glow -->
-                    <div class="absolute -top-20 -right-20 w-40 h-40 bg-indigo-500 rounded-full mix-blend-screen filter blur-[60px] opacity-20"></div>
-                    <div class="absolute -bottom-20 -left-20 w-40 h-40 bg-fuchsia-500 rounded-full mix-blend-screen filter blur-[60px] opacity-20"></div>
+            <div class="min-h-screen nclex-bg flex items-center justify-center p-4 animate-fade-in">
+                <div class="max-w-md w-full bg-white p-8 border border-gray-300 shadow-lg rounded-md text-center">
+                    <h2 class="text-2xl font-bold text-[#1A365D] mb-6 tracking-tight">CatClex Authentication</h2>
                     
-                    <div class="relative z-10">
-                        <div class="flex justify-center mb-6">
-                            <div class="bg-indigo-500/10 p-4 rounded-full border border-indigo-500/20">
-                                <i data-feather="shield" class="w-8 h-8 text-indigo-400"></i>
-                            </div>
-                        </div>
-                        <h2 class="text-2xl font-bold text-center text-white mb-2">CatClex Nexus</h2>
-                        <p class="text-center text-slate-400 text-sm mb-8">Admin Access Terminal</p>
+                    <form onsubmit="handleAuth(event)" class="space-y-4">
+                        <input type="email" id="auth-email" required placeholder="Email Address" class="w-full px-4 py-3 nclex-input-box focus:outline-none focus:ring-1 focus:ring-[#1A365D]">
+                        <input type="password" id="auth-pass" required placeholder="Password" class="w-full px-4 py-3 nclex-input-box focus:outline-none focus:ring-1 focus:ring-[#1A365D]">
+                        
+                        <button type="submit" class="w-full nclex-btn-blue py-3 font-bold text-lg">
+                            ${isLogin ? 'Secure Login' : 'Create Account'}
+                        </button>
+                    </form>
 
-                        <form onsubmit="handleLogin(event)" class="space-y-4">
-                            <div>
-                                <label class="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Admin Email</label>
-                                <input type="email" id="admin-email" required class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Passphrase</label>
-                                <input type="password" id="admin-pass" required class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all">
-                            </div>
-                            
-                            <button id="login-btn" type="submit" class="w-full bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white font-bold py-3 rounded-lg shadow-[0_0_15px_rgba(99,102,241,0.4)] transition-all mt-4">
-                                Access Portal
-                            </button>
-                        </form>
+                    <div class="mt-4 text-sm text-gray-600">
+                        <span>${isLogin ? "Don't have an account?" : "Already have an account?"}</span> 
+                        <button onclick="toggleAuthMode()" class="text-[#1e40af] font-bold hover:underline ml-1">
+                            ${isLogin ? 'Sign Up' : 'Login'}
+                        </button>
                     </div>
+
+                    <div class="my-6 border-t border-gray-200 relative">
+                        <span class="absolute top-[-10px] left-1/2 transform -translate-x-1/2 bg-white px-2 text-gray-400 text-sm font-bold">OR</span>
+                    </div>
+
+                    <button onclick="handleGoogleAuth()" class="w-full bg-white border border-gray-300 text-gray-700 py-3 rounded shadow-sm hover:bg-gray-50 flex items-center justify-center gap-3 font-bold transition-colors">
+                        <svg class="w-5 h-5" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/><path fill="none" d="M1 1h22v22H1z"/></svg>
+                        Continue with Google
+                    </button>
+                </div>
+            </div>`;
+        }
+
+        function renderPending() {
+            return `
+            <div class="min-h-screen nclex-bg flex items-center justify-center p-4 animate-fade-in">
+                <div class="max-w-md w-full bg-white p-8 border border-gray-300 shadow-lg rounded-md text-center">
+                    <i data-feather="clock" class="w-16 h-16 text-amber-500 mx-auto mb-4 spinner" style="animation-duration: 3s;"></i>
+                    <h2 class="text-2xl font-bold text-[#1A365D] mb-2 tracking-tight">Pending Verification</h2>
+                    <p class="text-gray-600 mb-8 leading-relaxed">Your account has been securely created, but it requires manual verification from the CatClex Administrator before you can access the simulator.</p>
+                    <p class="text-xs text-blue-600 font-bold mb-4 animate-pulse">Automatically checking for approval...</p>
+                    <button onclick="logout()" class="nclex-btn-blue px-8 py-3 font-bold">Secure Logout</button>
                 </div>
             </div>`;
         }
 
         function renderDashboard() {
-            const s = window.AdminState;
+            const btnDisabled = !window.AppState.openRouterKey ? 'opacity-50 cursor-not-allowed' : '';
+            const areas = calculateStruggleAreas();
+            
+            let pastExamsHtml = window.AppState.pastExams.length === 0 
+                ? '<p class="text-gray-500 text-sm italic">No exams completed yet.</p>'
+                : window.AppState.pastExams.slice(0, 5).map(e => `
+                    <div class="flex justify-between items-center py-2 border-b border-gray-100 last:border-0">
+                        <span class="text-sm font-bold ${e.status === 'pass' ? 'text-green-700' : 'text-red-700'}">${e.status.toUpperCase()}</span>
+                        <span class="text-xs text-gray-500">${new Date(e.endTime).toLocaleDateString()}</span>
+                    </div>`).join('');
 
-            // Generate User Table Rows
-            const userRows = s.usersList.map(u => {
-                const isVerified = u.verified;
-                const statusBadge = isVerified 
-                    ? `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"><i data-feather="check-circle" class="w-3 h-3"></i> Approved</span>`
-                    : `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20"><i data-feather="clock" class="w-3 h-3"></i> Pending</span>`;
-                
-                const actionBtn = isVerified
-                    ? `<button onclick="toggleVerification('${u.uid}', true)" class="px-3 py-1.5 bg-slate-800 hover:bg-rose-500/20 text-slate-300 hover:text-rose-400 border border-slate-700 hover:border-rose-500/30 rounded-md text-xs font-medium transition-colors">Revoke Access</button>`
-                    : `<button onclick="toggleVerification('${u.uid}', false)" class="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-400 text-white shadow-[0_0_10px_rgba(99,102,241,0.3)] rounded-md text-xs font-medium transition-all">Approve User</button>`;
-
-                const dateStr = u.createdAt ? u.createdAt.toLocaleDateString() : 'Unknown';
-
-                return `
-                <tr class="border-b border-white/5 hover:bg-white/5 transition-colors group">
-                    <td class="py-4 px-4">
-                        <div class="flex items-center gap-3">
-                            <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-slate-700 to-slate-600 flex items-center justify-center text-xs font-bold text-white shadow-inner">
-                                ${u.email.charAt(0).toUpperCase()}
-                            </div>
-                            <span class="text-sm font-medium text-slate-200">${u.email}</span>
+            let struggleAreasHtml = areas.length === 0
+                ? '<p class="text-gray-500 text-sm italic">Take an exam to view your struggle areas.</p>'
+                : areas.slice(0, 4).map(a => `
+                    <div class="mb-3">
+                        <div class="flex justify-between text-xs font-bold mb-1">
+                            <span class="text-black truncate pr-2">${a.category}</span>
+                            <span class="${a.pct < 75 ? 'text-red-600' : 'text-green-600'}">${a.pct}%</span>
                         </div>
-                    </td>
-                    <td class="py-4 px-4 text-sm text-slate-400">${dateStr}</td>
-                    <td class="py-4 px-4">${statusBadge}</td>
-                    <td class="py-4 px-4 text-right">${actionBtn}</td>
-                </tr>`;
-            }).join('');
+                        <div class="w-full bg-gray-200 rounded-full h-1.5">
+                            <div class="${a.pct < 75 ? 'bg-red-500' : 'bg-green-500'} h-1.5 rounded-full" style="width: ${a.pct}%"></div>
+                        </div>
+                    </div>`).join('');
 
             return `
-            <!-- Top Navigation -->
-            <nav class="glass-panel border-b-0 border-x-0 sticky top-0 z-40">
-                <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-                    <div class="flex items-center gap-3">
-                        <div class="bg-indigo-500/20 p-2 rounded-lg border border-indigo-500/30">
-                            <i data-feather="activity" class="w-5 h-5 text-indigo-400"></i>
-                        </div>
-                        <span class="text-lg font-bold text-white tracking-wide">CatClex <span class="font-light text-slate-400">Nexus</span></span>
+            <div class="max-w-5xl mx-auto p-4 w-full flex-grow mt-8 animate-fade-in">
+                <div class="flex justify-between items-end mb-6">
+                    <div>
+                        <h1 class="text-3xl font-bold text-[#1A365D] tracking-tight">CatClex Dashboard</h1>
+                        <p class="text-gray-600 font-semibold text-sm">Welcome back, ${window.AppState.user.email}</p>
                     </div>
-                    <button onclick="logout()" class="flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-white transition-colors">
-                        <i data-feather="log-out" class="w-4 h-4"></i> Disconnect
-                    </button>
+                    <button onclick="logout()" class="text-[#1A365D] hover:underline font-bold text-sm">Logout</button>
                 </div>
-            </nav>
-
-            <main class="flex-grow max-w-7xl mx-auto w-full px-6 py-8 animate-fade-in grid grid-cols-1 lg:grid-cols-3 gap-8">
                 
-                <!-- Left Column: Stats & Users -->
-                <div class="lg:col-span-2 space-y-6">
-                    
-                    <!-- Stats Overview -->
-                    <div class="grid grid-cols-2 gap-4">
-                        <div class="glass-panel p-6 rounded-2xl relative overflow-hidden group">
-                            <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><i data-feather="users" class="w-16 h-16"></i></div>
-                            <h3 class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Total Students</h3>
-                            <div class="text-4xl font-bold text-white">${s.stats.total}</div>
-                        </div>
-                        <div class="glass-panel p-6 rounded-2xl relative overflow-hidden group">
-                            <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><i data-feather="alert-circle" class="text-amber-500 w-16 h-16"></i></div>
-                            <h3 class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Pending Approvals</h3>
-                            <div class="text-4xl font-bold ${s.stats.pending > 0 ? 'text-amber-400' : 'text-emerald-400'}">${s.stats.pending}</div>
+                <div class="bg-white p-10 border border-gray-300 shadow-sm mb-8 text-center rounded-sm">
+                    <h2 class="text-2xl font-bold text-black mb-2 tracking-tight">Infinite CAT Engine</h2>
+                    <p class="text-gray-600 mb-8 font-semibold text-sm">2026 NGN Simulation (85-150 Items)</p>
+                    <button onclick="startNewExam()" class="nclex-btn-blue px-10 py-4 font-bold text-lg w-full max-w-md ${btnDisabled}">
+                        Begin NCLEX Examination
+                    </button>
+                    ${!window.AppState.openRouterKey ? '<p class="text-red-600 font-bold text-sm mt-4"><i data-feather="alert-triangle" class="w-4 h-4 inline mb-1"></i> System Offline: AI Engine configurations missing in Database.</p>' : ''}
+                </div>
+                
+                <div class="grid md:grid-cols-2 gap-6">
+                    <div class="bg-white p-6 border border-gray-300 shadow-sm rounded-sm">
+                        <h3 class="font-bold text-lg text-[#1A365D] border-b border-gray-300 pb-2 mb-4 flex items-center gap-2"><i data-feather="file-text" class="w-5 h-5"></i> Recent Performance</h3>
+                        ${pastExamsHtml}
+                    </div>
+                    <div class="bg-white p-6 border border-gray-300 shadow-sm rounded-sm">
+                        <h3 class="font-bold text-lg text-[#1A365D] border-b border-gray-300 pb-2 mb-4 flex items-center gap-2"><i data-feather="bar-chart-2" class="w-5 h-5"></i> Lowest Categories</h3>
+                        ${struggleAreasHtml}
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        function getExamLayout() {
+            const session = window.AppState.examSession;
+            let mainContent = '';
+
+            if (window.AppState.isGenerating) {
+                mainContent = `
+                <div class="flex flex-col items-center justify-center h-[500px] bg-white">
+                    <div class="w-10 h-10 border-4 border-[#1A365D] border-t-transparent rounded-full spinner mb-4"></div>
+                    <p class="text-black font-bold tracking-wide">Loading...</p>
+                </div>`;
+            } else if (session.currentQuestion) {
+                const qTextFormatted = session.currentQuestion.text.replace(/\n/g, '<br>');
+                mainContent = `
+                <div class="p-8 bg-white min-h-[500px]">
+                    <div class="mb-8 flex flex-col">
+                        <h2 id="question-text" class="text-base text-black leading-relaxed font-normal">${qTextFormatted}</h2>
+                    </div>
+                    <div id="options-container" class="ml-2"></div>
+                </div>`;
+            }
+
+            return `
+            <div class="min-h-screen nclex-bg flex flex-col w-full animate-fade-in">
+                <header class="nclex-header p-1 flex justify-between items-center">
+                    <div class="flex items-center ml-2">
+                        <div class="bg-[#1e3a8a] border border-blue-400 p-1 cursor-default flex flex-col items-center justify-center w-12 h-12 shadow-[inset_1px_1px_0px_0px_#60a5fa,inset_-1px_-1px_0px_0px_#1e3a8a]">
+                            <i data-feather="monitor" class="w-5 h-5 text-white"></i>
+                            <span class="text-[9px] mt-1 text-white font-bold">Calc</span>
                         </div>
                     </div>
-
-                    <!-- User Management Table -->
-                    <div class="glass-panel rounded-2xl overflow-hidden flex flex-col h-[500px]">
-                        <div class="px-6 py-5 border-b border-white/10 flex justify-between items-center bg-white/[0.02]">
-                            <h2 class="text-lg font-bold text-white flex items-center gap-2"><i data-feather="shield" class="w-5 h-5 text-indigo-400"></i> Access Management</h2>
-                        </div>
-                        <div class="flex-grow overflow-auto custom-scrollbar">
-                            <table class="w-full text-left border-collapse">
-                                <thead class="bg-slate-900/50 sticky top-0 z-10 backdrop-blur-md">
-                                    <tr>
-                                        <th class="py-3 px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Candidate Email</th>
-                                        <th class="py-3 px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Date Joined</th>
-                                        <th class="py-3 px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Status</th>
-                                        <th class="py-3 px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider text-right">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    ${userRows.length > 0 ? userRows : `<tr><td colspan="4" class="py-8 text-center text-slate-500 italic">No users found in database.</td></tr>`}
-                                </tbody>
-                            </table>
+                    <div class="flex items-center mr-4">
+                        <div class="flex flex-col items-end">
+                            <span class="text-[10px] text-white uppercase tracking-widest font-bold">Time Remaining</span>
+                            <span id="exam-timer" class="font-bold text-lg text-white">${formatTime(session.timeRemaining)}</span>
                         </div>
                     </div>
+                </header>
 
+                <div class="bg-[#f0f0f0] p-1 px-4 flex justify-between items-center border-b border-gray-400">
+                    <span class="text-black font-bold text-sm">Question: ${session.questionsAsked.length + 1}</span>
+                    <button onclick="requestExitExam()" class="text-[#1A365D] hover:underline text-sm font-bold">End Exam</button>
                 </div>
 
-                <!-- Right Column: System Config -->
-                <div class="space-y-6">
-                    <div class="glass-panel rounded-2xl p-6 relative overflow-hidden">
-                        <div class="absolute -top-20 -right-20 w-40 h-40 bg-fuchsia-500 rounded-full mix-blend-screen filter blur-[80px] opacity-10"></div>
+                <main class="flex-grow flex justify-center items-start pt-6 px-4 pb-16">
+                    <div class="w-full max-w-5xl border border-gray-300 bg-white flex flex-col shadow-sm rounded-md overflow-hidden">
+                        ${mainContent}
                         
-                        <h2 class="text-lg font-bold text-white mb-6 flex items-center gap-2 border-b border-white/10 pb-4">
-                            <i data-feather="cpu" class="w-5 h-5 text-fuchsia-400"></i> Engine Architecture
-                        </h2>
-                        
-                        <div class="space-y-5">
-                            <div>
-                                <label class="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">OpenRouter API Key</label>
-                                <div class="relative">
-                                    <i data-feather="key" class="absolute left-3 top-3 w-4 h-4 text-slate-500"></i>
-                                    <input type="password" id="config-apikey" value="${s.engineConfig.apikey}" class="w-full bg-slate-900/60 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-fuchsia-500/50 focus:ring-1 focus:ring-fuchsia-500/50 transition-all font-mono">
-                                </div>
-                                <p class="text-[10px] text-slate-500 mt-1.5">Securely updates the global database configuration.</p>
-                            </div>
-                            
-                            <div>
-                                <label class="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">AI Model Fallback Chain</label>
-                                <div class="relative">
-                                    <i data-feather="server" class="absolute left-3 top-3 w-4 h-4 text-slate-500"></i>
-                                    <textarea id="config-slugs" rows="4" class="w-full bg-slate-900/60 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-fuchsia-500/50 focus:ring-1 focus:ring-fuchsia-500/50 transition-all font-mono leading-relaxed resize-none">${s.engineConfig.slugs}</textarea>
-                                </div>
-                                <p class="text-[10px] text-slate-500 mt-1.5">Separate slugs with commas to dictate OpenRouter's auto-fallback priority.</p>
-                            </div>
-
-                            <button id="save-config-btn" onclick="saveEngineConfig()" class="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white font-medium py-2.5 rounded-lg transition-all flex items-center justify-center gap-2 text-sm mt-2">
-                                <i data-feather="save" class="w-4 h-4"></i> Save Configuration
+                        <div class="nclex-footer p-4 flex justify-end">
+                            <button id="next-btn" onclick="handleNextQuestion()" disabled class="nclex-btn-disabled px-10 py-2 font-bold text-sm transition-colors">
+                                Next
                             </button>
                         </div>
                     </div>
+                </main>
+            </div>
+            `;
+        }
+
+        window.renderExamOptions = () => {
+            if (window.AppState.isGenerating) return;
+            const session = window.AppState.examSession;
+            const q = session.currentQuestion;
+            const container = document.getElementById('options-container');
+            const nextBtn = document.getElementById('next-btn');
+
+            if(!container) return;
+
+            let optionsHTML = '';
+            let canSubmit = false;
+            
+            if (q.type === 'mc' || q.type === 'sata') {
+                const isSata = q.type === 'sata';
+                
+                if (isSata) {
+                    optionsHTML += `<p class="font-bold text-black mb-4">Select all that apply.</p><div class="space-y-3">`;
+                } else {
+                    optionsHTML += `<div class="space-y-3">`;
+                }
+
+                q.options.forEach((opt, idx) => {
+                    const isSelected = session.selectedAnswers.includes(idx);
+                    const inputMarker = isSata 
+                        ? `<div class="w-5 h-5 border-2 border-black flex items-center justify-center bg-white flex-shrink-0 mt-0.5">${isSelected ? '<div class="w-3 h-3 bg-black"></div>' : ''}</div>`
+                        : `<div class="w-5 h-5 border-2 border-black rounded-full flex items-center justify-center bg-white flex-shrink-0 mt-0.5">${isSelected ? '<div class="w-2.5 h-2.5 bg-black rounded-full"></div>' : ''}</div>`;
+
+                    optionsHTML += `
+                        <label class="flex items-start gap-3 cursor-pointer p-1 group">
+                            ${inputMarker}
+                            <input type="checkbox" class="hidden" onclick="toggleAnswer(${idx})">
+                            <span class="text-black text-base font-normal">${opt}</span>
+                        </label>
+                    `;
+                });
+                optionsHTML += `</div>`;
+                canSubmit = session.selectedAnswers.length > 0;
+            } 
+            else if (q.type === 'highlight') {
+                optionsHTML += `<div class="bg-[#f9f9f9] border border-gray-300 p-6 text-base leading-loose cursor-pointer select-none">`;
+                q.options.forEach((opt, idx) => {
+                    const isSelected = session.selectedAnswers.includes(idx);
+                    const highlightClass = isSelected ? 'bg-yellow-300 font-bold border-b-2 border-black' : 'hover:bg-gray-200 transition-colors';
+                    optionsHTML += `<span onclick="toggleAnswer(${idx})" class="p-1 rounded ${highlightClass}">${opt}</span> `;
+                });
+                optionsHTML += `</div>`;
+                canSubmit = session.selectedAnswers.length > 0;
+            }
+            else if (q.type === 'bowtie') {
+                optionsHTML += `
+                <div class="bg-[#f9f9f9] p-4 border border-gray-400">
+                    <p class="font-bold text-black mb-4 text-center text-sm">Complete the diagram by selecting from the choices below to specify what condition the client is most likely experiencing, 2 actions the nurse should take, and 2 parameters to monitor.</p>
                     
-                    <!-- Environment Info -->
-                    <div class="glass-panel rounded-xl p-4 flex items-start gap-3 border-l-4 border-l-indigo-500">
-                        <i data-feather="info" class="w-5 h-5 text-indigo-400 flex-shrink-0 mt-0.5"></i>
-                        <div>
-                            <h4 class="text-sm font-semibold text-white">Live Production Data</h4>
-                            <p class="text-xs text-slate-400 mt-1 leading-relaxed">Changes made here instantly affect the live CatClex student engine connected to the <span class="font-mono text-indigo-300">catclex</span> Firebase instance.</p>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div class="bg-white border border-gray-400 p-2">
+                            <h4 class="font-bold text-center border-b border-gray-400 pb-1 mb-2 text-sm bg-[#e0e0e0]">Actions to Take</h4>
+                            <p class="text-xs text-gray-600 text-center mb-2">Select 2 (${session.selectedAnswers.actions.length}/2)</p>
+                            <div class="space-y-1">
+                                ${q.bowtie_data.actions.map((opt, idx) => {
+                                    const isSel = session.selectedAnswers.actions.includes(idx);
+                                    return `<div onclick="toggleAnswer(${idx}, 'actions')" class="cursor-pointer text-sm p-2 border border-black ${isSel ? 'bg-[#1A365D] text-white font-bold' : 'bg-white hover:bg-gray-100'}">${opt}</div>`;
+                                }).join('')}
+                            </div>
+                        </div>
+
+                        <div class="bg-white border-2 border-black p-2 shadow-inner">
+                            <h4 class="font-bold text-center border-b border-black pb-1 mb-2 text-sm bg-[#e0e0e0]">Potential Condition</h4>
+                            <p class="text-xs text-gray-600 text-center mb-2">Select 1 (${session.selectedAnswers.condition.length}/1)</p>
+                            <div class="space-y-1">
+                                ${q.bowtie_data.condition.map((opt, idx) => {
+                                    const isSel = session.selectedAnswers.condition.includes(idx);
+                                    return `<div onclick="toggleAnswer(${idx}, 'condition')" class="cursor-pointer text-sm p-2 border border-black ${isSel ? 'bg-[#1A365D] text-white font-bold' : 'bg-white hover:bg-gray-100'}">${opt}</div>`;
+                                }).join('')}
+                            </div>
+                        </div>
+
+                        <div class="bg-white border border-gray-400 p-2">
+                            <h4 class="font-bold text-center border-b border-gray-400 pb-1 mb-2 text-sm bg-[#e0e0e0]">Parameters to Monitor</h4>
+                            <p class="text-xs text-gray-600 text-center mb-2">Select 2 (${session.selectedAnswers.parameters.length}/2)</p>
+                            <div class="space-y-1">
+                                ${q.bowtie_data.parameters.map((opt, idx) => {
+                                    const isSel = session.selectedAnswers.parameters.includes(idx);
+                                    return `<div onclick="toggleAnswer(${idx}, 'parameters')" class="cursor-pointer text-sm p-2 border border-black ${isSel ? 'bg-[#1A365D] text-white font-bold' : 'bg-white hover:bg-gray-100'}">${opt}</div>`;
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+                
+                canSubmit = (session.selectedAnswers.actions.length === 2 && session.selectedAnswers.condition.length === 1 && session.selectedAnswers.parameters.length === 2);
+            }
+
+            container.innerHTML = optionsHTML;
+            feather.replace();
+
+            if (canSubmit) {
+                nextBtn.disabled = false;
+                nextBtn.className = "nclex-btn-blue px-12 py-2 font-bold text-base cursor-pointer";
+            } else {
+                nextBtn.disabled = true;
+                nextBtn.className = "nclex-btn-disabled px-12 py-2 font-bold text-base cursor-not-allowed";
+            }
+        };
+
+        function renderResults() {
+            const session = window.AppState.examSession;
+            const isPass = session.status === 'pass';
+            
+            const reviewHTML = session.history.map((h, i) => `
+                <div class="mb-6 bg-white p-4 border border-gray-400">
+                    <div class="flex items-start gap-3">
+                        <div class="mt-1 flex-shrink-0">
+                            ${h.score === 1.0 ? '<i data-feather="check-square" class="text-green-700"></i>' : (h.score > 0 ? '<i data-feather="minus-square" class="text-amber-500"></i>' : '<i data-feather="x-square" class="text-red-700"></i>')}
+                        </div>
+                        <div class="flex-grow">
+                            <div class="flex justify-between items-center mb-1">
+                                <p class="font-bold text-black">Question ${i + 1} <span class="text-gray-600 font-normal text-sm ml-2">(${h.category})</span></p>
+                                <span class="text-xs font-bold ${h.score === 1.0 ? 'text-green-700' : (h.score > 0 ? 'text-amber-600' : 'text-red-700')}">${(h.score * 100).toFixed(0)}% Credit</span>
+                            </div>
+                            <p class="text-black mb-3 text-sm italic">${h.text.replace(/\n/g, '<br>').substring(0, 200)}...</p>
+                            <div class="bg-[#f0f0f0] border-l-4 border-[#1A365D] p-3">
+                                <p class="text-[#1A365D] font-bold text-sm mb-1">Rationale / Explanation:</p>
+                                <p class="text-black text-sm">${h.rationale || 'No rationale provided by the engine.'}</p>
+                            </div>
                         </div>
                     </div>
                 </div>
+            `).join('');
 
-            </main>
-            `;
+            return `
+            <div class="min-h-screen nclex-bg p-6 flex flex-col items-center">
+                <div class="w-full max-w-4xl bg-white border-2 border-black shadow-[4px_4px_0px_rgba(0,0,0,0.1)]">
+                    
+                    <div class="bg-white border-b-2 border-black p-6 flex justify-between items-end">
+                        <div>
+                            <h1 class="text-2xl font-bold text-black tracking-tight">Candidate Performance Report (CPR)</h1>
+                            <p class="text-sm text-gray-700 mt-1">Computerized Adaptive Testing Results</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-xs text-gray-600 uppercase font-bold">Items Evaluated</p>
+                            <p class="font-bold text-xl text-black">${session.questionsAsked.length}</p>
+                        </div>
+                    </div>
+
+                    <div class="p-8 flex flex-col items-center justify-center border-b-2 border-black ${isPass ? 'bg-green-50' : 'bg-red-50'}">
+                        <h2 class="text-4xl font-black tracking-widest ${isPass ? 'text-green-800' : 'text-red-800'}">
+                            ${isPass ? 'PASS' : 'FAIL'}
+                        </h2>
+                        <p class="text-black mt-2 text-center max-w-lg font-bold">
+                            The CAT algorithm evaluated your performance and determined your competency with a 95% confidence interval.
+                        </p>
+                    </div>
+
+                    <div class="p-6 bg-[#e0e0e0]">
+                        <h3 class="text-lg font-bold text-black mb-4 border-b border-gray-400 pb-2">Item Review & Rationales</h3>
+                        <div class="space-y-2">
+                            ${reviewHTML}
+                        </div>
+                    </div>
+
+                    <div class="p-6 border-t-2 border-black bg-white text-center">
+                        <button onclick="AppState.view = 'dashboard'; renderApp();" class="nclex-btn-blue px-8 py-3 font-bold">
+                            Return to Dashboard
+                        </button>
+                    </div>
+                </div>
+            </div>`;
         }
 
         window.renderApp = () => {
             const appDiv = document.getElementById('app');
-            if (window.AdminState.view === 'loading') appDiv.innerHTML = renderLoading();
-            else if (window.AdminState.view === 'login') appDiv.innerHTML = renderLogin();
-            else if (window.AdminState.view === 'dashboard') appDiv.innerHTML = renderDashboard();
+            if (window.AppState.view === 'loading') appDiv.innerHTML = renderLoading();
+            else if (window.AppState.view === 'auth') appDiv.innerHTML = renderAuth();
+            else if (window.AppState.view === 'pending') appDiv.innerHTML = renderPending();
+            else if (window.AppState.view === 'dashboard') appDiv.innerHTML = renderDashboard();
+            else if (window.AppState.view === 'exam') { appDiv.innerHTML = getExamLayout(); window.renderExamOptions(); }
+            else if (window.AppState.view === 'results') appDiv.innerHTML = renderResults();
             feather.replace();
         };
 
