@@ -1,1 +1,460 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CatClex Admin | Command Center</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/feather-icons"></script>
+    
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+                    colors: {
+                        glass: 'rgba(255, 255, 255, 0.03)',
+                        glassBorder: 'rgba(255, 255, 255, 0.08)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        body {
+            background-color: #0f111a;
+            background-image: 
+                radial-gradient(at 0% 0%, hsla(253,16%,7%,1) 0, transparent 50%), 
+                radial-gradient(at 50% 0%, hsla(225,39%,30%,0.2) 0, transparent 50%), 
+                radial-gradient(at 100% 0%, hsla(339,49%,30%,0.2) 0, transparent 50%);
+            background-attachment: fixed;
+            color: #e2e8f0;
+        }
 
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        .animate-fade-in { animation: fadeIn 0.5s ease-out forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        .spinner { animation: spin 1s linear infinite; }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
+
+        /* Toast Animation */
+        .toast-enter { animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        .toast-exit { animation: slideOut 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        @keyframes slideOut { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col font-sans antialiased selection:bg-indigo-500/30">
+
+    <div id="app" class="flex-grow flex flex-col relative z-10"></div>
+    
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-3"></div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, getDocs, query, orderBy } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+
+        // Same Firebase Config as main app
+        const firebaseConfig = {
+            apiKey: "AIzaSyA_kK3OVsj9AkIS3cDzEMeRXDvXlcRG9L8",
+            authDomain: "catclex.firebaseapp.com",
+            projectId: "catclex",
+            storageBucket: "catclex.firebasestorage.app",
+            messagingSenderId: "966297687447",
+            appId: "1:966297687447:web:189a306f23375c8a68a0d2"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        window.AdminState = {
+            view: 'loading',
+            user: null,
+            usersList: [],
+            engineConfig: { apikey: '', slugs: '' },
+            stats: { total: 0, pending: 0 }
+        };
+
+        // --- TOAST NOTIFICATIONS ---
+        window.showToast = (message, type = 'success') => {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const icon = type === 'success' ? 'check-circle' : 'alert-circle';
+            const colorClass = type === 'success' ? 'text-emerald-400 border-emerald-500/30' : 'text-rose-400 border-rose-500/30';
+            
+            toast.className = `glass-panel border-l-4 ${colorClass} px-4 py-3 rounded-r-lg shadow-lg flex items-center gap-3 toast-enter min-w-[250px]`;
+            toast.innerHTML = `
+                <i data-feather="${icon}" class="w-5 h-5"></i>
+                <span class="text-sm font-medium text-white">${message}</span>
+            `;
+            
+            container.appendChild(toast);
+            feather.replace();
+
+            setTimeout(() => {
+                toast.classList.replace('toast-enter', 'toast-exit');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        };
+
+        // --- AUTH OBSERVER ---
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                try {
+                    // Secretly pull the allowed admin email from the server (or fallback to the hardcoded one)
+                    const adminConfigSnap = await getDoc(doc(db, 'engine', 'adminConfig'));
+                    let allowedEmail = 'cashton858@gmail.com'; 
+                    
+                    if (adminConfigSnap.exists() && adminConfigSnap.data().adminEmail) {
+                        allowedEmail = adminConfigSnap.data().adminEmail;
+                    }
+
+                    // Strict Gateway: If a normal student tries to access the admin portal, instantly boot them.
+                    if (user.email !== allowedEmail) {
+                        await signOut(auth);
+                        window.AdminState.user = null;
+                        window.AdminState.view = 'login';
+                        window.renderApp();
+                        return;
+                    }
+
+                    window.AdminState.user = user;
+                    window.AdminState.view = 'dashboard';
+                    await loadAdminData();
+                } catch (e) {
+                    console.error("Auth check error:", e);
+                    await signOut(auth);
+                    window.AdminState.user = null;
+                    window.AdminState.view = 'login';
+                    window.renderApp();
+                }
+            } else {
+                window.AdminState.user = null;
+                window.AdminState.view = 'login';
+                window.renderApp();
+            }
+        });
+
+        window.handleLogin = async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('admin-email').value;
+            const pass = document.getElementById('admin-pass').value;
+            const btn = document.getElementById('login-btn');
+            
+            btn.innerHTML = '<i data-feather="loader" class="w-5 h-5 spinner mx-auto"></i>';
+            btn.disabled = true;
+
+            try {
+                // Rely on Firebase to securely verify the password stored on the server
+                await signInWithEmailAndPassword(auth, email, pass);
+                
+                // Note: We don't show the success toast here yet, because the onAuthStateChanged 
+                // observer will catch the login and do the secret email check first.
+            } catch (err) {
+                // Generic error so malicious users don't know if the email exists or not
+                window.showToast("Invalid credentials or unauthorized access.", "error");
+                btn.innerHTML = 'Access Portal';
+                btn.disabled = false;
+            }
+        };
+
+        window.logout = async () => {
+            await signOut(auth);
+        };
+
+        // --- DATA FETCHING ---
+        async function loadAdminData() {
+            try {
+                // Fetch Users
+                const usersSnap = await getDocs(query(collection(db, 'users'), orderBy('createdAt', 'desc')));
+                const users = [];
+                let pendingCount = 0;
+
+                usersSnap.forEach(doc => {
+                    const data = doc.data();
+                    if(data.createdAt && data.createdAt.toDate) data.createdAt = data.createdAt.toDate();
+                    users.push({ uid: doc.id, ...data });
+                    if(data.verified === false) pendingCount++;
+                });
+
+                window.AdminState.usersList = users;
+                window.AdminState.stats.total = users.length;
+                window.AdminState.stats.pending = pendingCount;
+
+                // Fetch Engine Config
+                const apikeySnap = await getDoc(doc(db, 'engine', 'apikey'));
+                const slugsSnap = await getDoc(doc(db, 'engine', 'slugs'));
+                
+                if (apikeySnap.exists()) window.AdminState.engineConfig.apikey = apikeySnap.data().apikey || apikeySnap.data().string || '';
+                if (slugsSnap.exists()) window.AdminState.engineConfig.slugs = slugsSnap.data().slugs || slugsSnap.data().string || '';
+
+                window.renderApp();
+            } catch (error) {
+                console.error("Error loading data:", error);
+                window.showToast("Failed to load database data. Check permissions.", "error");
+            }
+        }
+
+        // --- ADMIN ACTIONS ---
+        window.toggleVerification = async (uid, currentStatus) => {
+            try {
+                const newStatus = !currentStatus;
+                await updateDoc(doc(db, 'users', uid), { verified: newStatus });
+                
+                // Update local state to immediately reflect changes without a full reload
+                const userIndex = window.AdminState.usersList.findIndex(u => u.uid === uid);
+                if(userIndex > -1) {
+                    window.AdminState.usersList[userIndex].verified = newStatus;
+                    window.AdminState.stats.pending += newStatus ? -1 : 1;
+                }
+                
+                window.showToast(`User ${newStatus ? 'Approved' : 'Revoked'} successfully!`);
+                window.renderApp();
+            } catch (err) {
+                window.showToast("Failed to update user.", "error");
+            }
+        };
+
+        window.saveEngineConfig = async () => {
+            const btn = document.getElementById('save-config-btn');
+            btn.innerHTML = '<i data-feather="loader" class="w-4 h-4 spinner"></i> Saving...';
+            
+            const newKey = document.getElementById('config-apikey').value;
+            const newSlugs = document.getElementById('config-slugs').value;
+
+            try {
+                // Save to Firestore using the exact paths your app expects
+                await setDoc(doc(db, 'engine', 'apikey'), { apikey: newKey, string: newKey });
+                await setDoc(doc(db, 'engine', 'slugs'), { slugs: newSlugs, string: newSlugs });
+                
+                window.AdminState.engineConfig.apikey = newKey;
+                window.AdminState.engineConfig.slugs = newSlugs;
+                
+                window.showToast("Engine Configuration Updated!");
+            } catch (err) {
+                window.showToast("Failed to save configuration.", "error");
+            } finally {
+                btn.innerHTML = '<i data-feather="save" class="w-4 h-4"></i> Save Configuration';
+                feather.replace();
+            }
+        };
+
+        // --- RENDERING VIEWS ---
+        function renderLoading() {
+            return `
+            <div class="flex-grow flex flex-col items-center justify-center animate-fade-in">
+                <div class="relative w-20 h-20">
+                    <div class="absolute inset-0 border-4 border-indigo-500/20 rounded-full"></div>
+                    <div class="absolute inset-0 border-4 border-indigo-500 border-t-transparent rounded-full spinner"></div>
+                </div>
+                <h2 class="mt-6 text-xl font-medium text-slate-300 tracking-widest uppercase text-sm">Establishing Secure Connection</h2>
+            </div>`;
+        }
+
+        function renderLogin() {
+            return `
+            <div class="flex-grow flex items-center justify-center p-4 animate-fade-in">
+                <div class="glass-panel p-8 rounded-2xl w-full max-w-md relative overflow-hidden">
+                    <!-- Decorative glow -->
+                    <div class="absolute -top-20 -right-20 w-40 h-40 bg-indigo-500 rounded-full mix-blend-screen filter blur-[60px] opacity-20"></div>
+                    <div class="absolute -bottom-20 -left-20 w-40 h-40 bg-fuchsia-500 rounded-full mix-blend-screen filter blur-[60px] opacity-20"></div>
+                    
+                    <div class="relative z-10">
+                        <div class="flex justify-center mb-6">
+                            <div class="bg-indigo-500/10 p-4 rounded-full border border-indigo-500/20">
+                                <i data-feather="shield" class="w-8 h-8 text-indigo-400"></i>
+                            </div>
+                        </div>
+                        <h2 class="text-2xl font-bold text-center text-white mb-2">CatClex Nexus</h2>
+                        <p class="text-center text-slate-400 text-sm mb-8">Admin Access Terminal</p>
+
+                        <form onsubmit="handleLogin(event)" class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Admin Email</label>
+                                <input type="email" id="admin-email" required class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Passphrase</label>
+                                <input type="password" id="admin-pass" required class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all">
+                            </div>
+                            
+                            <button id="login-btn" type="submit" class="w-full bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white font-bold py-3 rounded-lg shadow-[0_0_15px_rgba(99,102,241,0.4)] transition-all mt-4">
+                                Access Portal
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        function renderDashboard() {
+            const s = window.AdminState;
+
+            // Generate User Table Rows
+            const userRows = s.usersList.map(u => {
+                const isVerified = u.verified;
+                const statusBadge = isVerified 
+                    ? `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"><i data-feather="check-circle" class="w-3 h-3"></i> Approved</span>`
+                    : `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20"><i data-feather="clock" class="w-3 h-3"></i> Pending</span>`;
+                
+                const actionBtn = isVerified
+                    ? `<button onclick="toggleVerification('${u.uid}', true)" class="px-3 py-1.5 bg-slate-800 hover:bg-rose-500/20 text-slate-300 hover:text-rose-400 border border-slate-700 hover:border-rose-500/30 rounded-md text-xs font-medium transition-colors">Revoke Access</button>`
+                    : `<button onclick="toggleVerification('${u.uid}', false)" class="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-400 text-white shadow-[0_0_10px_rgba(99,102,241,0.3)] rounded-md text-xs font-medium transition-all">Approve User</button>`;
+
+                const dateStr = u.createdAt ? u.createdAt.toLocaleDateString() : 'Unknown';
+
+                return `
+                <tr class="border-b border-white/5 hover:bg-white/5 transition-colors group">
+                    <td class="py-4 px-4">
+                        <div class="flex items-center gap-3">
+                            <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-slate-700 to-slate-600 flex items-center justify-center text-xs font-bold text-white shadow-inner">
+                                ${u.email.charAt(0).toUpperCase()}
+                            </div>
+                            <span class="text-sm font-medium text-slate-200">${u.email}</span>
+                        </div>
+                    </td>
+                    <td class="py-4 px-4 text-sm text-slate-400">${dateStr}</td>
+                    <td class="py-4 px-4">${statusBadge}</td>
+                    <td class="py-4 px-4 text-right">${actionBtn}</td>
+                </tr>`;
+            }).join('');
+
+            return `
+            <!-- Top Navigation -->
+            <nav class="glass-panel border-b-0 border-x-0 sticky top-0 z-40">
+                <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <div class="bg-indigo-500/20 p-2 rounded-lg border border-indigo-500/30">
+                            <i data-feather="activity" class="w-5 h-5 text-indigo-400"></i>
+                        </div>
+                        <span class="text-lg font-bold text-white tracking-wide">CatClex <span class="font-light text-slate-400">Nexus</span></span>
+                    </div>
+                    <button onclick="logout()" class="flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-white transition-colors">
+                        <i data-feather="log-out" class="w-4 h-4"></i> Disconnect
+                    </button>
+                </div>
+            </nav>
+
+            <main class="flex-grow max-w-7xl mx-auto w-full px-6 py-8 animate-fade-in grid grid-cols-1 lg:grid-cols-3 gap-8">
+                
+                <!-- Left Column: Stats & Users -->
+                <div class="lg:col-span-2 space-y-6">
+                    
+                    <!-- Stats Overview -->
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="glass-panel p-6 rounded-2xl relative overflow-hidden group">
+                            <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><i data-feather="users" class="w-16 h-16"></i></div>
+                            <h3 class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Total Students</h3>
+                            <div class="text-4xl font-bold text-white">${s.stats.total}</div>
+                        </div>
+                        <div class="glass-panel p-6 rounded-2xl relative overflow-hidden group">
+                            <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><i data-feather="alert-circle" class="text-amber-500 w-16 h-16"></i></div>
+                            <h3 class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Pending Approvals</h3>
+                            <div class="text-4xl font-bold ${s.stats.pending > 0 ? 'text-amber-400' : 'text-emerald-400'}">${s.stats.pending}</div>
+                        </div>
+                    </div>
+
+                    <!-- User Management Table -->
+                    <div class="glass-panel rounded-2xl overflow-hidden flex flex-col h-[500px]">
+                        <div class="px-6 py-5 border-b border-white/10 flex justify-between items-center bg-white/[0.02]">
+                            <h2 class="text-lg font-bold text-white flex items-center gap-2"><i data-feather="shield" class="w-5 h-5 text-indigo-400"></i> Access Management</h2>
+                        </div>
+                        <div class="flex-grow overflow-auto custom-scrollbar">
+                            <table class="w-full text-left border-collapse">
+                                <thead class="bg-slate-900/50 sticky top-0 z-10 backdrop-blur-md">
+                                    <tr>
+                                        <th class="py-3 px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Candidate Email</th>
+                                        <th class="py-3 px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Date Joined</th>
+                                        <th class="py-3 px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Status</th>
+                                        <th class="py-3 px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider text-right">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${userRows.length > 0 ? userRows : `<tr><td colspan="4" class="py-8 text-center text-slate-500 italic">No users found in database.</td></tr>`}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- Right Column: System Config -->
+                <div class="space-y-6">
+                    <div class="glass-panel rounded-2xl p-6 relative overflow-hidden">
+                        <div class="absolute -top-20 -right-20 w-40 h-40 bg-fuchsia-500 rounded-full mix-blend-screen filter blur-[80px] opacity-10"></div>
+                        
+                        <h2 class="text-lg font-bold text-white mb-6 flex items-center gap-2 border-b border-white/10 pb-4">
+                            <i data-feather="cpu" class="w-5 h-5 text-fuchsia-400"></i> Engine Architecture
+                        </h2>
+                        
+                        <div class="space-y-5">
+                            <div>
+                                <label class="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">OpenRouter API Key</label>
+                                <div class="relative">
+                                    <i data-feather="key" class="absolute left-3 top-3 w-4 h-4 text-slate-500"></i>
+                                    <input type="password" id="config-apikey" value="${s.engineConfig.apikey}" class="w-full bg-slate-900/60 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-fuchsia-500/50 focus:ring-1 focus:ring-fuchsia-500/50 transition-all font-mono">
+                                </div>
+                                <p class="text-[10px] text-slate-500 mt-1.5">Securely updates the global database configuration.</p>
+                            </div>
+                            
+                            <div>
+                                <label class="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">AI Model Fallback Chain</label>
+                                <div class="relative">
+                                    <i data-feather="server" class="absolute left-3 top-3 w-4 h-4 text-slate-500"></i>
+                                    <textarea id="config-slugs" rows="4" class="w-full bg-slate-900/60 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-fuchsia-500/50 focus:ring-1 focus:ring-fuchsia-500/50 transition-all font-mono leading-relaxed resize-none">${s.engineConfig.slugs}</textarea>
+                                </div>
+                                <p class="text-[10px] text-slate-500 mt-1.5">Separate slugs with commas to dictate OpenRouter's auto-fallback priority.</p>
+                            </div>
+
+                            <button id="save-config-btn" onclick="saveEngineConfig()" class="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white font-medium py-2.5 rounded-lg transition-all flex items-center justify-center gap-2 text-sm mt-2">
+                                <i data-feather="save" class="w-4 h-4"></i> Save Configuration
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Environment Info -->
+                    <div class="glass-panel rounded-xl p-4 flex items-start gap-3 border-l-4 border-l-indigo-500">
+                        <i data-feather="info" class="w-5 h-5 text-indigo-400 flex-shrink-0 mt-0.5"></i>
+                        <div>
+                            <h4 class="text-sm font-semibold text-white">Live Production Data</h4>
+                            <p class="text-xs text-slate-400 mt-1 leading-relaxed">Changes made here instantly affect the live CatClex student engine connected to the <span class="font-mono text-indigo-300">catclex</span> Firebase instance.</p>
+                        </div>
+                    </div>
+                </div>
+
+            </main>
+            `;
+        }
+
+        window.renderApp = () => {
+            const appDiv = document.getElementById('app');
+            if (window.AdminState.view === 'loading') appDiv.innerHTML = renderLoading();
+            else if (window.AdminState.view === 'login') appDiv.innerHTML = renderLogin();
+            else if (window.AdminState.view === 'dashboard') appDiv.innerHTML = renderDashboard();
+            feather.replace();
+        };
+
+        window.onload = window.renderApp;
+    </script>
+</body>
+</html>
