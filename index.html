@@ -3,62 +3,55 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Infinite NCLEX Engine</title>
+    <title>CatClex Engine — 2026</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/feather-icons"></script>
-    
     <style>
         .animate-fade-in { animation: fadeIn 0.4s ease-out; }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         .spinner { animation: spin 1s linear infinite; }
         @keyframes spin { 100% { transform: rotate(360deg); } }
-        
-        /* Modernized Pearson VUE NGN Font & Styling */
         .nclex-font { font-family: Tahoma, Arial, Helvetica, sans-serif; }
-        .nclex-bg { background-color: #f3f4f6; } 
+        .nclex-bg { background-color: #f3f4f6; }
         .nclex-header { background-color: #1A365D; color: white; border-bottom: 2px solid #0f172a; }
         .nclex-footer { background-color: #ffffff; border-top: 1px solid #cbd5e1; }
-        
-        .nclex-btn-blue { 
-            background-color: #1A365D; 
-            color: white; 
-            border: 1px solid #0f172a; 
-            border-radius: 4px !important; 
+        .nclex-btn-blue {
+            background-color: #1A365D;
+            color: white;
+            border: 1px solid #0f172a;
+            border-radius: 4px !important;
             transition: background-color 0.2s ease-in-out;
             cursor: pointer;
         }
         .nclex-btn-blue:hover { background-color: #1e40af; }
-        
-        .nclex-btn-disabled { 
-            background-color: #f1f5f9; 
-            color: #94a3b8; 
-            border: 1px solid #cbd5e1; 
-            cursor: not-allowed; 
+        .nclex-btn-disabled {
+            background-color: #f1f5f9;
+            color: #94a3b8;
+            border: 1px solid #cbd5e1;
+            cursor: not-allowed;
             border-radius: 4px !important;
         }
-
         .nclex-input-box {
             border: 1px solid #cbd5e1;
             background-color: white;
             border-radius: 4px !important;
             box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
         }
-        
-        /* Custom scrollbar for clinical realism */
         ::-webkit-scrollbar { width: 12px; }
         ::-webkit-scrollbar-track { background: #f1f1f1; border-left: 1px solid #ccc; }
         ::-webkit-scrollbar-thumb { background: #c1c1c1; border: 1px solid #999; }
         ::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
+        .heatmap-bar { transition: width 0.8s ease-out; }
+        .focus-area-badge { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+        .strength-badge { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
     </style>
 </head>
 <body class="nclex-bg text-black nclex-font min-h-screen flex flex-col">
 
     <div id="app" class="flex-grow flex flex-col relative z-10"></div>
-    
-    <!-- Custom Modal Container -->
+
     <div id="modal-container" class="fixed inset-0 z-50 hidden bg-black/60 flex items-center justify-center p-4 opacity-0 transition-opacity duration-200">
         <div id="modal-content" class="bg-white border-2 border-black max-w-md w-full p-6 transform scale-95 transition-transform duration-200 shadow-2xl">
-            <!-- Modal injected here -->
         </div>
     </div>
 
@@ -83,60 +76,171 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
 
-        // Map AppState and Functions to window so inline HTML onclick handlers work
+        // ─── CONSTANTS ───────────────────────────────────────────────
+        const STARTING_SE          = 1.0;
+        const MIN_QUESTIONS        = 85;
+        const MAX_QUESTIONS_RN     = 145;  // NGN RN max (was 150)
+        const MAX_QUESTIONS_PN     = 130;  // NGN PN max
+        const MAX_QUESTIONS        = MAX_QUESTIONS_RN; // default to RN
+        const PASSING_STANDARD     = 0.0;  // NCLEX passing logit
+        const CATEGORY_PENALTY_WINDOW = 3;
+
+        // 2026 NCSBN Weighted Client Needs Categories
+        const CLIENT_NEEDS = [
+            { category: "Management of Care",                           weight: 18 },
+            { category: "Pharmacological and Parenteral Therapies",     weight: 16 },
+            { category: "Physiological Adaptation",                     weight: 14 },
+            { category: "Safety and Infection Prevention and Control",  weight: 13 },
+            { category: "Reduction of Risk Potential",                  weight: 12 },
+            { category: "Health Promotion and Maintenance",             weight:  9 },
+            { category: "Psychosocial Integrity",                       weight:  9 },
+            { category: "Basic Care and Comfort",                       weight:  9 },
+        ];
+
+        // NCJMM Clinical Judgment Layers
+        const NCJMM_LAYERS = [
+            'Recognize Cues',
+            'Analyze Cues',
+            'Prioritize Hypotheses',
+            'Generate Solutions',
+            'Take Action',
+            'Evaluate Outcomes'
+        ];
+
+        // ─── APP STATE ────────────────────────────────────────────────
         window.AppState = {
-            view: 'loading', 
+            view: 'loading',
             examSession: null,
             pastExams: [],
             timerInterval: null,
-            verificationPollInterval: null, 
+            verificationPollInterval: null,
             openRouterKey: '',
-            aiModel: '', 
+            aiModel: '',
             isGenerating: false,
             user: null,
             isVerified: false,
-            authMode: 'login'
+            authMode: 'login',
+            categoryHistory: [],
         };
 
-        const STARTING_SE = 1.0; 
-        const MIN_QUESTIONS = 85;  // 2026 Official Minimum
-        const MAX_QUESTIONS = 150; // 2026 Official Maximum
-        const PASS_LOGIT_THRESHOLD = 0.0;
-        const FAIL_LOGIT_THRESHOLD = -0.5;
+        // ─── ENHANCED BLUEPRINT ENGINE: getNextCategory() ────────────
+        // Proportional allocation: categories furthest below target weight get boosted
+        function getNextCategory() {
+            const asked = window.AppState.examSession
+                ? window.AppState.examSession.history.length
+                : window.AppState.categoryHistory.length;
 
-        // 2026 WEIGHTED CLIENT NEEDS CATEGORIES
-        const CLIENT_NEEDS = [
-            { category: "Management of Care", weight: 18 },
-            { category: "Safety and Infection Prevention and Control", weight: 13 }, // 2026 Title Update
-            { category: "Health Promotion and Maintenance", weight: 9 },
-            { category: "Psychosocial Integrity", weight: 9 },
-            { category: "Basic Care and Comfort", weight: 9 },
-            { category: "Pharmacological and Parenteral Therapies", weight: 16 },
-            { category: "Reduction of Risk Potential", weight: 12 },
-            { category: "Physiological Adaptation", weight: 14 }
-        ];
-
-        // Custom function to select category based on 2026 official weights
-        function getWeightedCategory() {
-            let sum = 0;
-            let r = Math.random() * 100;
-            for (let i = 0; i < CLIENT_NEEDS.length; i++) {
-                sum += CLIENT_NEEDS[i].weight;
-                if (r <= sum) return CLIENT_NEEDS[i].category;
+            if (asked < 5) {
+                // Random weighted start for first 5 questions
+                return weightedRandomPick(CLIENT_NEEDS).category;
             }
-            return CLIENT_NEEDS[0].category; // Fallback
+
+            // Calculate actual category distribution so far
+            const actualCounts = {};
+            CLIENT_NEEDS.forEach(cn => actualCounts[cn.category] = 0);
+
+            if (window.AppState.examSession) {
+                window.AppState.examSession.history.forEach(h => {
+                    if (actualCounts[h.category] !== undefined) actualCounts[h.category]++;
+                });
+            } else {
+                window.AppState.categoryHistory.forEach(c => {
+                    if (actualCounts[c] !== undefined) actualCounts[c]++;
+                });
+            }
+
+            // Calculate deficit for each category (how far below target %)
+            const deviations = CLIENT_NEEDS.map(cn => {
+                const actualPct = (actualCounts[cn.category] / asked) * 100;
+                const targetPct = cn.weight;
+                const deficit = targetPct - actualPct;
+                return { category: cn.category, deficit };
+            });
+
+            // Use deficit as sampling weight (proportional allocation)
+            const totalDeficit = deviations.reduce((s, d) => s + Math.max(0, d.deficit), 0);
+            if (totalDeficit < 1) return weightedRandomPick(CLIENT_NEEDS).category;
+
+            let r = Math.random() * totalDeficit;
+            for (const d of deviations) {
+                const adjustedWeight = Math.max(0.01, d.deficit);
+                r -= adjustedWeight;
+                if (r <= 0) {
+                    window.AppState.categoryHistory.push(d.category);
+                    if (window.AppState.categoryHistory.length > 20) {
+                        window.AppState.categoryHistory.shift();
+                    }
+                    return d.category;
+                }
+            }
+            const fallback = deviations[0].category;
+            window.AppState.categoryHistory.push(fallback);
+            return fallback;
         }
 
+        function weightedRandomPick(items) {
+            const totalWeight = items.reduce((s, i) => s + i.weight, 0);
+            let r = Math.random() * totalWeight;
+            for (const item of items) {
+                r -= item.weight;
+                if (r <= 0) return item;
+            }
+            return items[0];
+        }
+
+        // ─── IRT / RASCH MODEL ────────────────────────────────────────
+        const calculateProbability = (ability, difficulty) => {
+            const exponent = ability - difficulty;
+            return Math.exp(exponent) / (1 + Math.exp(exponent));
+        };
+
+        // Newton-Raphson MLE for Rasch ability estimation (replaces simple approximation)
+        function estimateAbilityMLE(responses, difficulties) {
+            let theta = 0.0;
+            for (let iter = 0; iter < 20; iter++) {
+                let sumScoreMinusProb = 0;
+                let sumProbTimesOneMinusProb = 0;
+                for (let i = 0; i < responses.length; i++) {
+                    const p = Math.exp(theta - difficulties[i]) / (1 + Math.exp(theta - difficulties[i]));
+                    sumScoreMinusProb += responses[i] - p;
+                    sumProbTimesOneMinusProb += p * (1 - p);
+                }
+                if (Math.abs(sumProbTimesOneMinusProb) < 1e-10) break;
+                const delta = sumScoreMinusProb / sumProbTimesOneMinusProb;
+                theta += delta;
+                if (Math.abs(delta) < 0.001) break;
+            }
+            return Math.max(-4.0, Math.min(4.0, theta));
+        }
+
+        // Original simple update (retained for compatibility during transition)
+        const updateAbility = (currentAbility, difficulty, scoreDecimal) => {
+            const probCorrect = calculateProbability(currentAbility, difficulty);
+            const stepSize = 0.5;
+            return currentAbility + (stepSize * (scoreDecimal - probCorrect));
+        };
+
+        // ─── TEST INFORMATION & STANDARD ERROR ───────────────────────
+        // SE derived from test information function (replaces linear subtraction)
+        function calculateSE(theta, administeredDifficulties) {
+            let information = 0;
+            for (const b of administeredDifficulties) {
+                const p = Math.exp(theta - b) / (1 + Math.exp(theta - b));
+                information += p * (1 - p);
+            }
+            if (information < 0.01) return 3.0;
+            return 1.0 / Math.sqrt(information);
+        }
+
+        // ─── AUTH STATE ───────────────────────────────────────────────
         onAuthStateChanged(auth, async (user) => {
             if (user) {
                 window.AppState.user = user;
                 window.AppState.view = 'loading';
                 window.renderApp();
-
                 try {
-                    const userDocRef = doc(db, 'users', user.uid);
+                    const userDocRef  = doc(db, 'users', user.uid);
                     const userDocSnap = await getDoc(userDocRef);
-                    
                     if (userDocSnap.exists() && userDocSnap.data().verified === true) {
                         window.AppState.isVerified = true;
                         await fetchEngineConfig();
@@ -156,32 +260,25 @@
                 window.AppState.user = null;
                 window.AppState.isVerified = false;
                 window.AppState.view = 'auth';
-                if (window.AppState.verificationPollInterval) {
-                    clearInterval(window.AppState.verificationPollInterval);
-                }
+                if (window.AppState.verificationPollInterval) clearInterval(window.AppState.verificationPollInterval);
             }
             window.renderApp();
         });
 
         function startVerificationPolling(uid) {
-            if (window.AppState.verificationPollInterval) {
-                clearInterval(window.AppState.verificationPollInterval);
-            }
+            if (window.AppState.verificationPollInterval) clearInterval(window.AppState.verificationPollInterval);
             window.AppState.verificationPollInterval = setInterval(async () => {
                 if (window.AppState.view !== 'pending') {
                     clearInterval(window.AppState.verificationPollInterval);
                     return;
                 }
-                
                 try {
-                    const userDocSnap = await getDoc(doc(db, 'users', uid));
-                    if (userDocSnap.exists() && userDocSnap.data().verified === true) {
+                    const snap = await getDoc(doc(db, 'users', uid));
+                    if (snap.exists() && snap.data().verified === true) {
                         clearInterval(window.AppState.verificationPollInterval);
                         window.AppState.isVerified = true;
-                        
                         await fetchEngineConfig();
                         await fetchPastExams();
-                        
                         window.AppState.view = 'dashboard';
                         window.renderApp();
                     }
@@ -194,11 +291,9 @@
         async function fetchEngineConfig() {
             try {
                 const apikeySnap = await getDoc(doc(db, 'engine', 'apikey'));
-                const slugsSnap = await getDoc(doc(db, 'engine', 'slugs'));
-                
-                if (apikeySnap.exists()) window.AppState.openRouterKey = apikeySnap.data().apikey || apikeySnap.data().string;
-                if (slugsSnap.exists()) window.AppState.aiModel = slugsSnap.data().slugs || slugsSnap.data().string;
-                
+                const slugsSnap  = await getDoc(doc(db, 'engine', 'slugs'));
+                if (apikeySnap.exists()) window.AppState.openRouterKey = apikeySnap.data().apikey || apikeySnap.data().string || '';
+                if (slugsSnap.exists())  window.AppState.aiModel       = slugsSnap.data().slugs  || slugsSnap.data().string  || '';
             } catch (e) {
                 console.error("Error fetching engine config:", e);
             }
@@ -206,88 +301,111 @@
 
         async function fetchPastExams() {
             try {
-                const q = query(collection(db, 'users', window.AppState.user.uid, 'exams'), orderBy('endTime', 'desc'));
+                const q    = query(collection(db, 'users', window.AppState.user.uid, 'exams'), orderBy('endTime', 'desc'));
                 const snap = await getDocs(q);
                 const exams = [];
-                snap.forEach(doc => {
-                    const data = doc.data();
-                    if(data.endTime && data.endTime.toDate) data.endTime = data.endTime.toDate();
+                snap.forEach(d => {
+                    const data = d.data();
+                    if (data.endTime && data.endTime.toDate) data.endTime = data.endTime.toDate();
                     exams.push(data);
                 });
                 window.AppState.pastExams = exams;
-            } catch(e) {
-                console.error("Error fetching past exams", e);
+            } catch (e) {
+                console.error("Error fetching past exams:", e);
             }
         }
 
+        // ─── PERFORMANCE HEATMAP ANALYTICS ───────────────────────────
         function calculateStruggleAreas() {
-            let stats = {};
+            const stats = {};
+            CLIENT_NEEDS.forEach(cn => {
+                stats[cn.category] = { total: 0, points: 0 };
+            });
+
             window.AppState.pastExams.forEach(exam => {
+                if (!exam.history) return;
                 exam.history.forEach(h => {
-                    if(!stats[h.category]) stats[h.category] = { total: 0, points: 0 };
+                    if (!stats[h.category]) stats[h.category] = { total: 0, points: 0 };
                     stats[h.category].total++;
-                    stats[h.category].points += h.score; // uses decimal score
+                    stats[h.category].points += h.score;
                 });
             });
-            
-            let arr = Object.keys(stats).map(cat => {
-                const pct = Math.round((stats[cat].points / stats[cat].total) * 100);
-                return { category: cat, pct: pct, ...stats[cat] };
+
+            return CLIENT_NEEDS.map(cn => {
+                const s = stats[cn.category];
+                const pct = s.total === 0 ? null : Math.round((s.points / s.total) * 100);
+                return {
+                    category: cn.category,
+                    pct,
+                    total: s.total,
+                    points: s.points,
+                    isFocusArea: pct !== null && pct < 70,
+                };
+            }).sort((a, b) => {
+                if (a.pct === null && b.pct === null) return 0;
+                if (a.pct === null) return 1;
+                if (b.pct === null) return -1;
+                return a.pct - b.pct;
             });
-            arr.sort((a, b) => a.pct - b.pct);
-            return arr;
         }
 
+        function calculateExamStruggleAreas(history) {
+            const stats = {};
+            CLIENT_NEEDS.forEach(cn => { stats[cn.category] = { total: 0, points: 0 }; });
+            history.forEach(h => {
+                if (!stats[h.category]) stats[h.category] = { total: 0, points: 0 };
+                stats[h.category].total++;
+                stats[h.category].points += h.score;
+            });
+            return CLIENT_NEEDS.map(cn => {
+                const s = stats[cn.category];
+                const pct = s.total === 0 ? null : Math.round((s.points / s.total) * 100);
+                return { category: cn.category, pct, total: s.total, isFocusArea: pct !== null && pct < 70 };
+            });
+        }
+
+        // ─── MODAL ────────────────────────────────────────────────────
         window.showModal = (title, message, type = 'info', onConfirm = null) => {
             const container = document.getElementById('modal-container');
-            const content = document.getElementById('modal-content');
-            
-            let icon = '<i data-feather="info" class="w-8 h-8 text-blue-800"></i>';
+            const content   = document.getElementById('modal-content');
+            let icon    = '<i data-feather="info" class="w-8 h-8 text-blue-800"></i>';
             let buttons = `<button onclick="closeModal()" class="w-full nclex-btn-blue px-4 py-2 font-bold">OK</button>`;
-            
             if (type === 'error') {
-                icon = '<i data-feather="alert-triangle" class="w-8 h-8 text-red-700"></i>';
+                icon    = '<i data-feather="alert-triangle" class="w-8 h-8 text-red-700"></i>';
                 buttons = `<button onclick="closeModal()" class="w-full bg-red-700 text-white px-4 py-2 border-2 border-black font-bold">Understood</button>`;
             } else if (type === 'confirm') {
-                icon = '<i data-feather="help-circle" class="w-8 h-8 text-amber-600"></i>';
+                icon    = '<i data-feather="help-circle" class="w-8 h-8 text-amber-600"></i>';
                 buttons = `
                     <button onclick="closeModal()" class="flex-1 bg-gray-300 text-black border-2 border-black px-4 py-2 font-bold">Cancel</button>
-                    <button id="modal-confirm-btn" class="flex-1 bg-amber-600 text-white border-2 border-black px-4 py-2 font-bold">Confirm</button>
-                `;
+                    <button id="modal-confirm-btn" class="flex-1 bg-amber-600 text-white border-2 border-black px-4 py-2 font-bold">Confirm</button>`;
             }
-
             content.innerHTML = `
                 <div class="flex flex-col items-center text-center">
                     <div class="mb-4">${icon}</div>
                     <h3 class="text-xl font-bold text-black mb-2">${title}</h3>
                     <p class="text-gray-800 mb-6">${message}</p>
                     <div class="flex gap-3 w-full">${buttons}</div>
-                </div>
-            `;
-            
+                </div>`;
             feather.replace();
             container.classList.remove('hidden');
             setTimeout(() => {
                 container.classList.remove('opacity-0');
                 content.classList.remove('scale-95');
             }, 10);
-
             if (type === 'confirm' && onConfirm) {
-                document.getElementById('modal-confirm-btn').onclick = () => {
-                    window.closeModal();
-                    onConfirm();
-                };
+                document.getElementById('modal-confirm-btn').onclick = () => { window.closeModal(); onConfirm(); };
             }
         };
 
         window.closeModal = () => {
             const container = document.getElementById('modal-container');
-            const content = document.getElementById('modal-content');
+            const content   = document.getElementById('modal-content');
             container.classList.add('opacity-0');
             content.classList.add('scale-95');
-            setTimeout(() => { container.classList.add('hidden'); }, 200); 
+            setTimeout(() => container.classList.add('hidden'), 200);
         };
 
+        // ─── AUTH ACTIONS ─────────────────────────────────────────────
         window.toggleAuthMode = () => {
             window.AppState.authMode = window.AppState.authMode === 'login' ? 'signup' : 'login';
             window.renderApp();
@@ -296,21 +414,16 @@
         window.handleAuth = async (e) => {
             e.preventDefault();
             const email = document.getElementById('auth-email').value;
-            const pass = document.getElementById('auth-pass').value;
-
+            const pass  = document.getElementById('auth-pass').value;
             if (window.AppState.authMode === 'signup') {
                 const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,12}$/;
                 if (!passwordRegex.test(pass)) {
-                    window.showModal("Invalid Password", "Password must be 6 to 12 characters and include at least one uppercase letter, one lowercase letter, one number, and one special character.", "error");
+                    window.showModal("Invalid Password", "Password must be 6–12 characters and include at least one uppercase, lowercase, number, and special character (@$!%*?&).", "error");
                     return;
                 }
                 try {
                     const cred = await createUserWithEmailAndPassword(auth, email, pass);
-                    await setDoc(doc(db, 'users', cred.user.uid), {
-                        email: email,
-                        verified: false,
-                        createdAt: new Date()
-                    });
+                    await setDoc(doc(db, 'users', cred.user.uid), { email, verified: false, createdAt: new Date() });
                 } catch (err) {
                     window.showModal("Signup Error", err.message, "error");
                 }
@@ -326,16 +439,11 @@
         window.handleGoogleAuth = async () => {
             try {
                 const provider = new GoogleAuthProvider();
-                const cred = await signInWithPopup(auth, provider);
-                const userDocRef = doc(db, 'users', cred.user.uid);
-                const userDocSnap = await getDoc(userDocRef);
-                
-                if (!userDocSnap.exists()) {
-                    await setDoc(userDocRef, {
-                        email: cred.user.email,
-                        verified: false,
-                        createdAt: new Date()
-                    });
+                const cred     = await signInWithPopup(auth, provider);
+                const ref      = doc(db, 'users', cred.user.uid);
+                const snap     = await getDoc(ref);
+                if (!snap.exists()) {
+                    await setDoc(ref, { email: cred.user.email, verified: false, createdAt: new Date() });
                 }
             } catch (err) {
                 window.showModal("Google Sign-In Error", err.message, "error");
@@ -343,53 +451,45 @@
         };
 
         window.logout = async () => {
-            if (window.AppState.verificationPollInterval) {
-                clearInterval(window.AppState.verificationPollInterval);
-            }
+            if (window.AppState.verificationPollInterval) clearInterval(window.AppState.verificationPollInterval);
             await signOut(auth);
         };
 
-        const calculateProbability = (ability, difficulty) => {
-          const exponent = ability - difficulty;
-          return Math.exp(exponent) / (1 + Math.exp(exponent));
-        };
-
-        const updateAbility = (currentAbility, difficulty, scoreDecimal) => {
-          const probCorrect = calculateProbability(currentAbility, difficulty);
-          const stepSize = 0.5; 
-          // Uses scoreDecimal (0.0 to 1.0) for +/- NGN partial credit weighting
-          return currentAbility + (stepSize * (scoreDecimal - probCorrect));
-        };
-
+        // ─── QUESTION GENERATION ──────────────────────────────────────
         async function generateNextQuestion(targetDifficulty, retries = 0) {
             window.AppState.isGenerating = true;
             window.renderApp();
 
-            const targetCategory = getWeightedCategory();
-            
-            // 2026 Specialty Sub-focus Wheel to guarantee diverse clinical settings
+            const targetCategory = getNextCategory();
+            const ncjmmLayer = NCJMM_LAYERS[Math.floor(Math.random() * NCJMM_LAYERS.length)];
+
             const specialties = [
-                "Pediatrics (Peds)", 
-                "Obstetrics and Maternity (OB/GYN)", 
-                "Medical-Surgical (Adult)", 
-                "Psychiatric and Mental Health", 
-                "Critical Care / ICU / Emergency", 
+                "Pediatrics (Peds)",
+                "Obstetrics and Maternity (OB/GYN)",
+                "Medical-Surgical (Adult)",
+                "Psychiatric and Mental Health",
+                "Critical Care / ICU / Emergency",
                 "Geriatrics / End of Life Care",
                 "Community Health / Equity Focus",
                 "Rare or Complex Disease Management"
             ];
             const randomSpecialty = specialties[Math.floor(Math.random() * specialties.length)];
 
+            // Expanded format pool including new NGN types
             const formatPool = [
-                "mc_standard", "mc_standard", "mc_standard", "mc_standard", "mc_standard", "mc_standard",
-                "sata_standard", "sata_standard", "sata_standard", "sata_standard", "sata_standard", "sata_standard",
-                "mc_ehr", "mc_ehr", "mc_ehr",
-                "sata_ehr", "sata_ehr",
-                "bowtie", "bowtie",
-                "highlight"
+                "mc_standard","mc_standard","mc_standard","mc_standard","mc_standard","mc_standard",
+                "sata_standard","sata_standard","sata_standard","sata_standard","sata_standard","sata_standard",
+                "mc_ehr","mc_ehr","mc_ehr",
+                "sata_ehr","sata_ehr",
+                "bowtie","bowtie",
+                "highlight",
+                "matrix_mc",
+                "drop_down",
+                "drag_drop",
+                "trend"
             ];
             const selectedFormat = formatPool[Math.floor(Math.random() * formatPool.length)];
-            
+
             let promptInstructions = "";
             let jsonSchema = "";
 
@@ -397,91 +497,161 @@
                 const typeCode = selectedFormat.split('_')[0];
                 promptInstructions = `Generate a standard, complex NCLEX clinical scenario. DO NOT use an EHR or charting format. Focus on clinical judgment, prioritization, or delegation.`;
                 jsonSchema = `{
-                    "id": "gen_${Date.now()}",
-                    "type": "${typeCode}",
-                    "category": "${targetCategory}",
-                    "difficulty": ${targetDifficulty.toFixed(2)},
-                    "text": "The clinical scenario paragraph followed by the question...",
-                    "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
-                    "correct": [int], // 0-indexed correct array (multiple if sata)
-                    "rationale": "Clinical explanation."
-                }`;
-            } 
-            else if (selectedFormat === "mc_ehr" || selectedFormat === "sata_ehr") {
+  "id": "gen_${Date.now()}",
+  "type": "${typeCode}",
+  "category": "${targetCategory}",
+  "ncjmm_layer": "${ncjmmLayer}",
+  "difficulty": ${targetDifficulty.toFixed(2)},
+  "text": "The clinical scenario paragraph followed by the question...",
+  "options": ["Option 1","Option 2","Option 3","Option 4"],
+  "correct": [0],
+  "rationale": "Clinical explanation."
+}`;
+            } else if (selectedFormat === "mc_ehr" || selectedFormat === "sata_ehr") {
                 const typeCode = selectedFormat.split('_')[0];
-                promptInstructions = `Generate an NGN Unfolding Case Study scenario. Incorporate a timeline of events (e.g., 0800, 1000, 1200) simulating an evolving clinical situation. Include Nurses Notes, Vitals, and/or Labs.`;
+                promptInstructions = `Generate an NGN Unfolding Case Study scenario. Incorporate a TIMELINE of events (e.g., 0800, 1000, 1200) simulating an evolving clinical situation with the patient's condition changing over time. Include Nurses Notes, Vital Signs, and/or Lab Results that evolve across the timestamps. The question must reference the most recent or changing data.`;
                 jsonSchema = `{
-                    "id": "gen_${Date.now()}",
-                    "type": "${typeCode}",
-                    "category": "${targetCategory}",
-                    "difficulty": ${targetDifficulty.toFixed(2)},
-                    "text": "EHR Notes:\\n0800: Client admitted...\\n1000: Condition changes...\\n\\nVitals:\\nBP 90/60...\\n\\nQuestion: Which action should the nurse take first based on the 1000 assessment?",
-                    "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
-                    "correct": [int], // 0-indexed correct array
-                    "rationale": "Clinical explanation."
-                }`;
-            }
-            else if (selectedFormat === "bowtie") {
-                promptInstructions = `Generate a complex NGN Bowtie format. Provide an unfolding EHR scenario that leads to the required diagram completion.`;
+  "id": "gen_${Date.now()}",
+  "type": "${typeCode}",
+  "category": "${targetCategory}",
+  "ncjmm_layer": "${ncjmmLayer}",
+  "difficulty": ${targetDifficulty.toFixed(2)},
+  "text": "EHR — Nurses Notes\\n\\n0800: Client admitted with chief complaint...\\n1000: Client reports worsening...\\n1200: Nurse reassesses client...\\n\\nVitals:\\n0800: T 37.2 | HR 88 | BP 128/76 | RR 16 | SpO2 98%\\n1200: T 38.4 | HR 112 | BP 90/60 | RR 24 | SpO2 91%\\n\\nLabs (1100):\\nWBC 18.2 | Hgb 9.1 | Na 148\\n\\nQuestion: Based on the 1200 assessment findings, which action should the nurse take FIRST?",
+  "options": ["Option 1","Option 2","Option 3","Option 4"],
+  "correct": [0],
+  "rationale": "Clinical explanation."
+}`;
+            } else if (selectedFormat === "bowtie") {
+                promptInstructions = `Generate a complex NGN Bowtie format. Provide an unfolding EHR scenario (with timestamps) that leads to the required bowtie diagram completion. The bowtie must have exactly 4 choices in each column.`;
                 jsonSchema = `{
-                    "id": "gen_${Date.now()}",
-                    "type": "bowtie",
-                    "category": "${targetCategory}",
-                    "difficulty": ${targetDifficulty.toFixed(2)},
-                    "text": "Clinical EHR scenario...",
-                    "bowtie_data": {
-                        "actions": ["Action 1", "Action 2", "Action 3", "Action 4"],
-                        "condition": ["Condition A", "Condition B", "Condition C", "Condition D"],
-                        "parameters": ["Monitor 1", "Monitor 2", "Monitor 3", "Monitor 4"],
-                        "correct_actions": [int, int], // exactly two 0-indexed integers
-                        "correct_condition": [int], // exactly one 0-indexed integer
-                        "correct_parameters": [int, int] // exactly two 0-indexed integers
-                    },
-                    "rationale": "Clinical explanation."
-                }`;
-            }
-            else if (selectedFormat === "highlight") {
-                promptInstructions = `Generate an NGN Highlight item. The 'text' must be the instructions. The 'options' array must represent consecutive sentences/phrases that form a single clinical paragraph. The user will click these sentences to highlight them.`;
+  "id": "gen_${Date.now()}",
+  "type": "bowtie",
+  "category": "${targetCategory}",
+  "ncjmm_layer": "${ncjmmLayer}",
+  "difficulty": ${targetDifficulty.toFixed(2)},
+  "text": "Clinical EHR scenario with evolving data...",
+  "bowtie_data": {
+    "actions":    ["Action 1","Action 2","Action 3","Action 4"],
+    "condition":  ["Condition A","Condition B","Condition C","Condition D"],
+    "parameters": ["Monitor 1","Monitor 2","Monitor 3","Monitor 4"],
+    "correct_actions":    [0, 1],
+    "correct_condition":  [0],
+    "correct_parameters": [0, 1]
+  },
+  "rationale": "Clinical explanation."
+}`;
+            } else if (selectedFormat === "highlight") {
+                promptInstructions = `Generate an NGN Highlight item. The 'text' must be the instructions. The 'options' array must represent CONSECUTIVE sentences/phrases that form a single clinical paragraph — the user will click sentences to highlight them.`;
                 jsonSchema = `{
-                    "id": "gen_${Date.now()}",
-                    "type": "highlight",
-                    "category": "${targetCategory}",
-                    "difficulty": ${targetDifficulty.toFixed(2)},
-                    "text": "Read the clinical scenario. Click to highlight the findings that require immediate intervention.",
-                    "options": ["A 45-year-old client is admitted with heart failure. ", "The client reports a sudden onset of a severe, tearing chest pain. ", "The heart rate is 88 bpm. ", "The blood pressure is 210/110 mmHg. "],
-                    "correct": [1, 3], // The 0-indexed indices of the correct sentences to highlight
-                    "rationale": "Clinical explanation."
-                }`;
+  "id": "gen_${Date.now()}",
+  "type": "highlight",
+  "category": "${targetCategory}",
+  "ncjmm_layer": "${ncjmmLayer}",
+  "difficulty": ${targetDifficulty.toFixed(2)},
+  "text": "Read the nurses notes. Click to highlight the assessment findings that require immediate follow-up.",
+  "options": ["A 68-year-old client is admitted with exacerbation of heart failure. ","The client reports sudden onset of severe, tearing chest pain radiating to the back. ","Heart rate is 88 bpm and regular. ","Blood pressure is 202/118 mmHg. "],
+  "correct": [1, 3],
+  "rationale": "Clinical explanation."
+}`;
+            } else if (selectedFormat === "matrix_mc") {
+                promptInstructions = `Generate an NGN Matrix Multiple Choice item. This is a grid/decision matrix where the user evaluates multiple clinical parameters and makes a Yes/No or checkbox decision for each. Provide 4 clinical parameters and for each, the correct decision (e.g., "Relevant" or "Not Relevant", "Expected" or "Unexpected", "Indicated" or "Contraindicated").`;
+                jsonSchema = `{
+  "id": "gen_${Date.now()}",
+  "type": "matrix_mc",
+  "category": "${targetCategory}",
+  "ncjmm_layer": "${ncjmmLayer}",
+  "difficulty": ${targetDifficulty.toFixed(2)},
+  "text": "A client presents with the following clinical findings. For each parameter, select whether it is a relevant finding for the suspected condition.",
+  "matrix_data": {
+    "parameters": ["Parameter 1", "Parameter 2", "Parameter 3", "Parameter 4"],
+    "correct_decisions": [true, false, true, false]
+  },
+  "rationale": "Clinical explanation."
+}`;
+            } else if (selectedFormat === "drop_down") {
+                promptInstructions = `Generate an NGN Drop-Down (Cloze) item. The text should be a clinical paragraph with 3 blanks. For each blank, provide 3-4 options in the dropdown_options array. The correct array indicates the index of the correct option for each blank.`;
+                jsonSchema = `{
+  "id": "gen_${Date.now()}",
+  "type": "drop_down",
+  "category": "${targetCategory}",
+  "ncjmm_layer": "${ncjmmLayer}",
+  "difficulty": ${targetDifficulty.toFixed(2)},
+  "text": "The nurse is caring for a client with [BLANK1]. The priority intervention is to [BLANK2]. The nurse should monitor for [BLANK3] as a potential complication.",
+  "dropdown_options": [
+    ["Option A1", "Option A2", "Option A3"],
+    ["Option B1", "Option B2", "Option B3", "Option B4"],
+    ["Option C1", "Option C2", "Option C3"]
+  ],
+  "correct": [1, 0, 2],
+  "rationale": "Clinical explanation."
+}`;
+            } else if (selectedFormat === "drag_drop") {
+                promptInstructions = `Generate an NGN Drag-and-Drop Prioritization item. Provide a clinical scenario and 5 actions/nursing interventions that must be ranked in priority order (1 = highest priority, 5 = lowest). The correct_order array shows the correct ranking (index 0 = rank 1, etc.).`;
+                jsonSchema = `{
+  "id": "gen_${Date.now()}",
+  "type": "drag_drop",
+  "category": "${targetCategory}",
+  "ncjmm_layer": "${ncjmmLayer}",
+  "difficulty": ${targetDifficulty.toFixed(2)},
+  "text": "A client arrives in the emergency department with the following symptoms. Prioritize the nursing actions from 1 (highest) to 5 (lowest).",
+  "drag_drop_items": ["Action 1", "Action 2", "Action 3", "Action 4", "Action 5"],
+  "correct_order": [2, 0, 4, 1, 3],
+  "rationale": "Clinical explanation."
+}`;
+            } else if (selectedFormat === "trend") {
+                promptInstructions = `Generate an NGN Trend (Unfolding Case Study) item. This is part of a multi-part case. Provide a clinical scenario with evolving data across 2-3 timestamps. Include a SINGLE focused question about the trend. The question should ask the user to identify the pattern or predict the next step based on the evolving data.`;
+                jsonSchema = `{
+  "id": "gen_${Date.now()}",
+  "type": "trend",
+  "category": "${targetCategory}",
+  "ncjmm_layer": "${ncjmmLayer}",
+  "difficulty": ${targetDifficulty.toFixed(2)},
+  "text": "Case Study: A 55-year-old client is admitted for observation.\\n\\n0800: Client alert and oriented. Vital signs: T 37.0, HR 82, BP 130/78, RR 16. Reports mild abdominal discomfort.\\n\\n1200: Client reports increasing abdominal pain, rated 7/10. Vital signs: T 37.8, HR 98, BP 118/72, RR 20. Abdomen distended and tender.\\n\\n1600: Client appears diaphoretic and restless. Vital signs: T 38.6, HR 118, BP 92/60, RR 26. Abdomen rigid.\\n\\nQuestion: Based on the trend in the client's condition, which action should the nurse take FIRST?",
+  "options": ["Option 1","Option 2","Option 3","Option 4"],
+  "correct": [0],
+  "rationale": "Clinical explanation."
+}`;
             }
 
             const finalPrompt = `
-            You are an expert NCSBN 2026 Next Generation NCLEX (NGN) Item Writer.
-            Target Item Response Theory (IRT) difficulty: ${targetDifficulty.toFixed(2)} (-3.0 easy to +3.0 very hard).
-            NCLEX 2026 Client Needs Category: ${targetCategory}.
-            Clinical Specialty Context: ${randomSpecialty}.
+You are an expert NCSBN 2026 Next Generation NCLEX (NGN) Item Writer.
 
-            INSTRUCTIONS:
-            ${promptInstructions}
-            Ensure the patient demographic and clinical scenario heavily reflect the assigned Clinical Specialty Context (${randomSpecialty}).
-            Per the 2026 NCSBN Test Plan, integrate concepts of unbiased care, health equity, and patient dignity into the scenario where strictly clinically appropriate. Use modernized 2026 terminology (e.g. "substance misuse" instead of "substance abuse").
-            Test clinical judgment, safe decision-making, and prioritization using the NCJMM model.
-            Distractors MUST be clinically plausible but definitively incorrect.
+Target IRT Difficulty: ${targetDifficulty.toFixed(2)} (scale: -3.0 = very easy, 0.0 = passing threshold, +3.0 = very hard)
+NCLEX 2026 Client Needs Category: ${targetCategory}
+NCJMM Clinical Judgment Layer: ${ncjmmLayer}
+Clinical Specialty Context: ${randomSpecialty}
 
-            OUTPUT FORMAT:
-            You must output ONLY a valid JSON object matching this exact schema. No markdown backticks, no conversational text.
-            ${jsonSchema}
-            `;
+CLINICAL INSTRUCTIONS:
+${promptInstructions}
+
+Ensure the patient demographic and clinical scenario heavily reflect the assigned Clinical Specialty Context (${randomSpecialty}).
+
+HEALTH EQUITY MANDATE (2026 NCSBN Requirement):
+- Integrate modernized, unbiased, and equitable language throughout. Use "substance misuse" not "substance abuse". Use gender-affirming language where appropriate (e.g., "client who is transgender", "person who menstruates"). 
+- Where clinically relevant, weave in health equity considerations such as social determinants of health, implicit bias, cultural humility, or disparities in care access.
+- Represent diverse patient demographics (age, race, gender identity, socioeconomic status) naturally in scenarios without stereotyping.
+
+CLINICAL QUALITY STANDARDS:
+- Test clinical judgment and safe decision-making using the NCJMM (Next-Generation Clinical Judgment Measurement Model), specifically targeting the "${ncjmmLayer}" layer.
+- All distractors (wrong answers) MUST be clinically plausible but definitively incorrect with clear reasoning.
+- Avoid "all of the above" or "none of the above" options.
+- Difficulty level MUST match the IRT target: ${targetDifficulty.toFixed(2)}.
+
+OUTPUT FORMAT:
+Respond ONLY with a valid JSON object matching this exact schema. No markdown fences, no preamble, no extra text.
+${jsonSchema}
+`;
 
             const requestBody = {
                 messages: [
-                    { role: "system", content: "You are a strict data formatting machine. You output valid JSON only." },
+                    { role: "system", content: "You are a strict data formatting machine. You output valid JSON only. No markdown. No preamble. No commentary." },
                     { role: "user", content: finalPrompt }
                 ]
             };
 
             const modelsList = window.AppState.aiModel.split(',').map(m => m.trim()).filter(m => m !== '');
             if (modelsList.length > 1) {
-                requestBody.models = modelsList; 
+                requestBody.models = modelsList;
             } else {
                 requestBody.model = modelsList[0] || 'google/gemma-2-9b-it:free';
             }
@@ -491,8 +661,8 @@
                     method: "POST",
                     headers: {
                         "Authorization": `Bearer ${window.AppState.openRouterKey}`,
-                        "HTTP-Referer": window.location.href, 
-                        "X-Title": "Infinite NCLEX Engine",
+                        "HTTP-Referer": window.location.href,
+                        "X-Title": "CatClex 2026 Master Engine",
                         "Content-Type": "application/json"
                     },
                     body: JSON.stringify(requestBody)
@@ -500,74 +670,96 @@
 
                 if (!response.ok) {
                     const errorData = await response.json().catch(() => ({}));
-                    throw new Error(errorData?.error?.message || `OpenRouter Error Code: ${response.status}`);
+                    throw new Error(errorData?.error?.message || `OpenRouter Error: ${response.status}`);
                 }
 
                 const data = await response.json();
                 let jsonString = data.choices[0].message.content.trim();
-                
-                const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
-                if (!jsonMatch) throw new Error("The AI model failed to format the output as JSON.");
-                
-                const generatedQuestion = JSON.parse(jsonMatch[0]);
-                
-                if(selectedFormat.includes('mc')) generatedQuestion.type = 'mc';
-                if(selectedFormat.includes('sata')) generatedQuestion.type = 'sata';
 
+                const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
+                if (!jsonMatch) throw new Error("AI model failed to return valid JSON.");
+
+                const generatedQuestion = JSON.parse(jsonMatch[0]);
+
+                // Normalize type
+                if (selectedFormat.includes('mc') && selectedFormat !== 'matrix_mc') generatedQuestion.type = 'mc';
+                if (selectedFormat.includes('sata')) generatedQuestion.type = 'sata';
+
+                // Cloud Harvester: save to questions/[difficulty]/bank/ in Firestore
                 try {
-                    const diffLevel = Number(generatedQuestion.difficulty).toFixed(1); 
+                    const diffLevel = Number(generatedQuestion.difficulty).toFixed(1);
                     await setDoc(doc(db, 'questions', diffLevel, 'bank', generatedQuestion.id), generatedQuestion);
                 } catch (uploadError) {
-                    console.error("Failed to upload harvested question to cloud bank:", uploadError);
+                    console.error("Cloud Harvester upload failed:", uploadError);
                 }
-                
+
                 window.AppState.examSession.currentQuestion = generatedQuestion;
-                
+
                 if (generatedQuestion.type === 'bowtie') {
                     window.AppState.examSession.selectedAnswers = { actions: [], condition: [], parameters: [] };
+                } else if (generatedQuestion.type === 'matrix_mc') {
+                    window.AppState.examSession.selectedAnswers = [];
+                } else if (generatedQuestion.type === 'drop_down') {
+                    window.AppState.examSession.selectedAnswers = [];
+                } else if (generatedQuestion.type === 'drag_drop') {
+                    // Initialize with current order
+                    window.AppState.examSession.selectedAnswers = generatedQuestion.drag_drop_items.map((_, i) => i);
                 } else {
                     window.AppState.examSession.selectedAnswers = [];
                 }
-                
+
                 window.AppState.isGenerating = false;
                 window.renderApp();
 
             } catch (error) {
                 console.error("AI Generation Error:", error);
                 if (retries < 3) {
-                    console.warn(`Silently retrying generation... Attempt ${retries + 1} of 3`);
-                    await new Promise(resolve => setTimeout(resolve, 1500));
+                    console.warn(`Retrying generation... attempt ${retries + 1}/3`);
+                    await new Promise(r => setTimeout(r, 1500));
                     return generateNextQuestion(targetDifficulty, retries + 1);
                 }
-                window.showModal("API Connection Failed", `Error: ${error.message}. OpenRouter models are failing.`, "error");
+                window.showModal("API Connection Failed", `Error: ${error.message}. Please try again or contact the administrator.`, "error");
                 window.AppState.isGenerating = false;
-                window.forceExitExam(); 
+                window.forceExitExam();
             }
         }
 
+        // ─── DYNAMIC BOWTIE SCORING ──────────────────────────────────
+        function scoreBowtieDynamic(bowtieData, selected) {
+            let points = 0;
+            let total = 0;
+            bowtieData.correct_actions.forEach(a => { if (selected.actions.includes(a)) points++; });
+            total += bowtieData.correct_actions.length;
+            bowtieData.correct_condition.forEach(c => { if (selected.condition.includes(c)) points++; });
+            total += bowtieData.correct_condition.length;
+            bowtieData.correct_parameters.forEach(p => { if (selected.parameters.includes(p)) points++; });
+            total += bowtieData.correct_parameters.length;
+            return total === 0 ? 0 : points / total;
+        }
+
+        // ─── EXAM FLOW ────────────────────────────────────────────────
         window.startNewExam = async () => {
             if (!window.AppState.openRouterKey) {
-                window.showModal("System Offline", "The AI Engine configurations (API key or Slugs) were not found in the database. Please contact the administrator.", "error");
+                window.showModal("System Offline", "AI Engine configuration (API key or model slugs) missing from the database. Contact your administrator.", "error");
                 return;
             }
-
+            window.AppState.categoryHistory = [];
             window.AppState.examSession = {
                 questionsAsked: [],
                 history: [],
                 currentAbility: 0.0,
                 standardError: STARTING_SE,
+                administeredDifficulties: [], // track for test information function
                 startTime: new Date(),
                 status: 'in-progress',
                 currentQuestion: null,
-                selectedAnswers: [], 
+                selectedAnswers: [],
                 timeRemaining: 5 * 60 * 60,
             };
             window.AppState.view = 'exam';
             window.renderApp();
-            
             if (window.AppState.timerInterval) clearInterval(window.AppState.timerInterval);
             window.AppState.timerInterval = setInterval(window.timerTick, 1000);
-
             await generateNextQuestion(0.0);
         };
 
@@ -582,8 +774,8 @@
                 finishExam(window.AppState.examSession.currentAbility > 0 ? 'pass' : 'fail');
                 return;
             }
-            const timerEl = document.getElementById('exam-timer');
-            if (timerEl) timerEl.innerText = formatTime(window.AppState.examSession.timeRemaining);
+            const el = document.getElementById('exam-timer');
+            if (el) el.innerText = formatTime(window.AppState.examSession.timeRemaining);
         };
 
         function formatTime(seconds) {
@@ -595,118 +787,188 @@
 
         window.toggleAnswer = (index, bowtieSection = null) => {
             const session = window.AppState.examSession;
-            const qType = session.currentQuestion.type;
+            const qType   = session.currentQuestion.type;
 
-            if (qType === 'mc') {
+            if (qType === 'mc' || qType === 'trend') {
                 session.selectedAnswers = [index];
-            } 
-            else if (qType === 'sata' || qType === 'highlight') {
+            } else if (qType === 'sata' || qType === 'highlight') {
                 const current = [...session.selectedAnswers];
                 if (current.includes(index)) {
                     session.selectedAnswers = current.filter(i => i !== index);
                 } else {
                     session.selectedAnswers.push(index);
                 }
-            } 
-            else if (qType === 'bowtie' && bowtieSection) {
+            } else if (qType === 'bowtie' && bowtieSection) {
                 const maxAllowed = bowtieSection === 'condition' ? 1 : 2;
                 const current = [...session.selectedAnswers[bowtieSection]];
-                
                 if (current.includes(index)) {
                     session.selectedAnswers[bowtieSection] = current.filter(i => i !== index);
+                } else if (current.length < maxAllowed) {
+                    session.selectedAnswers[bowtieSection].push(index);
                 } else {
-                    if (current.length < maxAllowed) {
-                        session.selectedAnswers[bowtieSection].push(index);
-                    } else {
-                        current.shift();
-                        current.push(index);
-                        session.selectedAnswers[bowtieSection] = current;
-                    }
+                    current.shift();
+                    current.push(index);
+                    session.selectedAnswers[bowtieSection] = current;
                 }
+            } else if (qType === 'matrix_mc') {
+                const current = [...session.selectedAnswers];
+                if (current.includes(index)) {
+                    session.selectedAnswers = current.filter(i => i !== index);
+                } else {
+                    session.selectedAnswers.push(index);
+                }
+            } else if (qType === 'drop_down') {
+                // For dropdown, index encodes which blank and which option
+                // We use a different approach: store as array of selected indices per blank
+                // index here is the option index, and we track which blank via a separate mechanism
+                // Simplified: store as array where position = blank index, value = option index
+                const blankIndex = window.AppState.examSession._currentBlank || 0;
+                const current = [...session.selectedAnswers];
+                while (current.length <= blankIndex) current.push(null);
+                current[blankIndex] = index;
+                session.selectedAnswers = current;
             }
+            window.renderExamOptions();
+        };
+
+        // For dropdown: set which blank is being answered
+        window.setDropdownBlank = (blankIndex) => {
+            window.AppState.examSession._currentBlank = blankIndex;
+        };
+
+        // For drag_drop: move item up/down in priority
+        window.moveDragItem = (fromIndex, direction) => {
+            const session = window.AppState.examSession;
+            const arr = [...session.selectedAnswers];
+            const toIndex = fromIndex + direction;
+            if (toIndex < 0 || toIndex >= arr.length) return;
+            [arr[fromIndex], arr[toIndex]] = [arr[toIndex], arr[fromIndex]];
+            session.selectedAnswers = arr;
             window.renderExamOptions();
         };
 
         window.handleNextQuestion = async () => {
             const session = window.AppState.examSession;
             const q = session.currentQuestion;
-            
-            let canSubmit = false;
-            let scoreDecimal = 0.0; // 0.0 to 1.0 (for partial credit)
 
-            if (q.type === 'mc') {
+            let canSubmit    = false;
+            let scoreDecimal = 0.0;
+
+            if (q.type === 'mc' || q.type === 'trend') {
                 if (session.selectedAnswers.length === 0) return;
                 canSubmit = true;
-                if (session.selectedAnswers[0] === q.correct[0]) scoreDecimal = 1.0;
-            } 
-            else if (q.type === 'sata' || q.type === 'highlight') {
+                scoreDecimal = session.selectedAnswers[0] === q.correct[0] ? 1.0 : 0.0;
+
+            } else if (q.type === 'sata' || q.type === 'highlight') {
                 if (session.selectedAnswers.length === 0) return;
                 canSubmit = true;
-                
-                // NGN +/- Partial Credit Scoring logic
-                const totalCorrectOptions = q.correct.length;
-                let userCorrectHits = 0;
-                let userIncorrectHits = 0;
-
+                // NGN +/- Partial Credit Scoring
+                const totalCorrect = q.correct.length;
+                let hits   = 0;
+                let misses = 0;
                 session.selectedAnswers.forEach(ans => {
-                    if (q.correct.includes(ans)) userCorrectHits++;
-                    else userIncorrectHits++;
+                    if (q.correct.includes(ans)) hits++;
+                    else misses++;
                 });
+                const rawScore = Math.max(0, hits - misses);
+                scoreDecimal = rawScore / totalCorrect;
 
-                // Points earned = (Correct Hits) - (Incorrect Hits), min 0
-                let rawScore = userCorrectHits - userIncorrectHits;
-                if (rawScore < 0) rawScore = 0;
-                
-                scoreDecimal = rawScore / totalCorrectOptions;
-            } 
-            else if (q.type === 'bowtie') {
-                if (session.selectedAnswers.actions.length === 2 && 
-                    session.selectedAnswers.condition.length === 1 && 
-                    session.selectedAnswers.parameters.length === 2) {
+            } else if (q.type === 'bowtie') {
+                const sel = session.selectedAnswers;
+                if (sel.actions.length === 2 && sel.condition.length === 1 && sel.parameters.length === 2) {
                     canSubmit = true;
-                    
-                    let points = 0;
-                    session.selectedAnswers.actions.forEach(a => { if(q.bowtie_data.correct_actions.includes(a)) points++; });
-                    if (session.selectedAnswers.condition[0] === q.bowtie_data.correct_condition[0]) points++;
-                    session.selectedAnswers.parameters.forEach(p => { if(q.bowtie_data.correct_parameters.includes(p)) points++; });
-                    
-                    scoreDecimal = points / 5.0; // 5 total points possible on bowtie
+                    scoreDecimal = scoreBowtieDynamic(q.bowtie_data, sel);
                 } else {
                     return;
                 }
+            } else if (q.type === 'matrix_mc') {
+                if (session.selectedAnswers.length === 0) return;
+                canSubmit = true;
+                // Score: each correct decision (selected = true when correct = true, or not selected when correct = false)
+                let points = 0;
+                const total = q.matrix_data.parameters.length;
+                for (let i = 0; i < total; i++) {
+                    const isSelected = session.selectedAnswers.includes(i);
+                    const isCorrect = q.matrix_data.correct_decisions[i];
+                    if (isSelected === isCorrect) points++;
+                }
+                scoreDecimal = points / total;
+
+            } else if (q.type === 'drop_down') {
+                // Check all blanks have a selection
+                const numBlanks = q.dropdown_options.length;
+                if (session.selectedAnswers.length < numBlanks) return;
+                if (session.selectedAnswers.some(s => s === null || s === undefined)) return;
+                canSubmit = true;
+                let points = 0;
+                for (let i = 0; i < numBlanks; i++) {
+                    if (session.selectedAnswers[i] === q.correct[i]) points++;
+                }
+                scoreDecimal = points / numBlanks;
+
+            } else if (q.type === 'drag_drop') {
+                if (session.selectedAnswers.length !== q.drag_drop_items.length) return;
+                canSubmit = true;
+                // Score based on how many items are in correct position
+                let points = 0;
+                for (let i = 0; i < session.selectedAnswers.length; i++) {
+                    if (session.selectedAnswers[i] === q.correct_order[i]) points++;
+                }
+                scoreDecimal = points / q.drag_drop_items.length;
             }
 
             if (!canSubmit) return;
 
-            const newAbility = updateAbility(session.currentAbility, q.difficulty, scoreDecimal);
-            // Slower SE drop to accommodate 85+ questions
-            const newSE = Math.max(0.15, session.standardError - 0.03); 
+            // Track difficulty for test information function
+            session.administeredDifficulties.push(q.difficulty);
+
+            // Use Newton-Raphson MSE for ability estimation after sufficient data
+            let newAbility;
+            if (session.history.length >= 10) {
+                const responses = session.history.map(h => h.score);
+                const difficulties = session.administeredDifficulties.slice(0, -1);
+                responses.push(scoreDecimal);
+                difficulties.push(q.difficulty);
+                newAbility = estimateAbilityMLE(responses, difficulties);
+            } else {
+                // Use simple update for first 10 questions
+                newAbility = updateAbility(session.currentAbility, q.difficulty, scoreDecimal);
+            }
+
+            // Use test information function for SE
+            const newSE = calculateSE(newAbility, session.administeredDifficulties);
 
             session.history.push({
-                qId: q.id,
-                difficulty: q.difficulty,
-                score: scoreDecimal,
-                isCorrect: scoreDecimal === 1.0, 
+                qId:         q.id,
+                difficulty:  q.difficulty,
+                score:       scoreDecimal,
+                isCorrect:   scoreDecimal === 1.0,
                 abilityAfter: newAbility,
-                category: q.category,
-                text: q.text,
-                rationale: q.rationale 
+                category:    q.category,
+                ncjmmLayer:  q.ncjmm_layer || 'Unknown',
+                text:        q.text,
+                rationale:   q.rationale,
             });
             session.questionsAsked.push(q.id);
             session.currentAbility = newAbility;
-            session.standardError = newSE;
+            session.standardError  = newSE;
 
             let examComplete = false;
-            let finalStatus = 'in-progress';
+            let finalStatus  = 'in-progress';
 
+            // True 95% CI rule: entire confidence interval must lie above/below passing standard
             if (session.questionsAsked.length >= MIN_QUESTIONS) {
-                if (newAbility - newSE > PASS_LOGIT_THRESHOLD) { examComplete = true; finalStatus = 'pass'; } 
-                else if (newAbility + newSE < FAIL_LOGIT_THRESHOLD) { examComplete = true; finalStatus = 'fail'; }
+                if (newAbility - 1.96 * newSE > PASSING_STANDARD) {
+                    examComplete = true;
+                    finalStatus = 'pass';
+                } else if (newAbility + 1.96 * newSE < PASSING_STANDARD) {
+                    examComplete = true;
+                    finalStatus = 'fail';
+                }
             }
-
             if (session.questionsAsked.length >= MAX_QUESTIONS) {
                 examComplete = true;
-                finalStatus = newAbility > 0 ? 'pass' : 'fail';
+                finalStatus  = newAbility > PASSING_STANDARD ? 'pass' : 'fail';
             }
 
             if (examComplete) {
@@ -717,32 +979,31 @@
         };
 
         async function finishExam(status) {
-            window.AppState.examSession.status = status;
+            window.AppState.examSession.status  = status;
             window.AppState.examSession.endTime = new Date();
-            
             try {
                 await addDoc(collection(db, 'users', window.AppState.user.uid, 'exams'), window.AppState.examSession);
-                await fetchPastExams(); 
+                await fetchPastExams();
             } catch (e) {
                 console.error("Failed to save exam to cloud:", e);
             }
-
-            window.AppState.view = 'results';
             clearInterval(window.AppState.timerInterval);
+            window.AppState.view = 'results';
             window.renderApp();
         }
 
         window.requestExitExam = () => {
-            window.showModal("End Exam", "Are you sure you want to end your current exam session? Progress will not be saved.", "confirm", window.forceExitExam);
+            window.showModal("End Exam", "Are you sure you want to end your exam? Progress will NOT be saved.", "confirm", window.forceExitExam);
         };
 
         window.forceExitExam = () => {
-            window.AppState.view = 'dashboard';
             clearInterval(window.AppState.timerInterval);
             window.AppState.examSession = null;
+            window.AppState.view = 'dashboard';
             window.renderApp();
         };
 
+        // ─── RENDER: LOADING ──────────────────────────────────────────
         function renderLoading() {
             return `
             <div class="min-h-screen nclex-bg flex flex-col items-center justify-center p-4">
@@ -751,33 +1012,25 @@
             </div>`;
         }
 
+        // ─── RENDER: AUTH ─────────────────────────────────────────────
         function renderAuth() {
             const isLogin = window.AppState.authMode === 'login';
             return `
             <div class="min-h-screen nclex-bg flex items-center justify-center p-4 animate-fade-in">
                 <div class="max-w-md w-full bg-white p-8 border border-gray-300 shadow-lg rounded-md text-center">
                     <h2 class="text-2xl font-bold text-[#1A365D] mb-6 tracking-tight">CatClex Authentication</h2>
-                    
                     <form onsubmit="handleAuth(event)" class="space-y-4">
                         <input type="email" id="auth-email" required placeholder="Email Address" class="w-full px-4 py-3 nclex-input-box focus:outline-none focus:ring-1 focus:ring-[#1A365D]">
                         <input type="password" id="auth-pass" required placeholder="Password" class="w-full px-4 py-3 nclex-input-box focus:outline-none focus:ring-1 focus:ring-[#1A365D]">
-                        
-                        <button type="submit" class="w-full nclex-btn-blue py-3 font-bold text-lg">
-                            ${isLogin ? 'Secure Login' : 'Create Account'}
-                        </button>
+                        <button type="submit" class="w-full nclex-btn-blue py-3 font-bold text-lg">${isLogin ? 'Secure Login' : 'Create Account'}</button>
                     </form>
-
                     <div class="mt-4 text-sm text-gray-600">
-                        <span>${isLogin ? "Don't have an account?" : "Already have an account?"}</span> 
-                        <button onclick="toggleAuthMode()" class="text-[#1e40af] font-bold hover:underline ml-1">
-                            ${isLogin ? 'Sign Up' : 'Login'}
-                        </button>
+                        <span>${isLogin ? "Don't have an account?" : "Already have an account?"}</span>
+                        <button onclick="toggleAuthMode()" class="text-[#1e40af] font-bold hover:underline ml-1">${isLogin ? 'Sign Up' : 'Login'}</button>
                     </div>
-
                     <div class="my-6 border-t border-gray-200 relative">
                         <span class="absolute top-[-10px] left-1/2 transform -translate-x-1/2 bg-white px-2 text-gray-400 text-sm font-bold">OR</span>
                     </div>
-
                     <button onclick="handleGoogleAuth()" class="w-full bg-white border border-gray-300 text-gray-700 py-3 rounded shadow-sm hover:bg-gray-50 flex items-center justify-center gap-3 font-bold transition-colors">
                         <svg class="w-5 h-5" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/><path fill="none" d="M1 1h22v22H1z"/></svg>
                         Continue with Google
@@ -786,43 +1039,66 @@
             </div>`;
         }
 
+        // ─── RENDER: PENDING ──────────────────────────────────────────
         function renderPending() {
             return `
             <div class="min-h-screen nclex-bg flex items-center justify-center p-4 animate-fade-in">
                 <div class="max-w-md w-full bg-white p-8 border border-gray-300 shadow-lg rounded-md text-center">
                     <i data-feather="clock" class="w-16 h-16 text-amber-500 mx-auto mb-4 spinner" style="animation-duration: 3s;"></i>
                     <h2 class="text-2xl font-bold text-[#1A365D] mb-2 tracking-tight">Pending Verification</h2>
-                    <p class="text-gray-600 mb-8 leading-relaxed">Your account has been securely created, but it requires manual verification from the CatClex Administrator before you can access the simulator.</p>
-                    <p class="text-xs text-blue-600 font-bold mb-4 animate-pulse">Automatically checking for approval...</p>
+                    <p class="text-gray-600 mb-8 leading-relaxed">Your account has been created, but requires manual administrator verification before you can access the simulator.</p>
+                    <p class="text-xs text-blue-600 font-bold mb-4 animate-pulse">Automatically checking for approval every 3 seconds...</p>
                     <button onclick="logout()" class="nclex-btn-blue px-8 py-3 font-bold">Secure Logout</button>
                 </div>
             </div>`;
         }
 
+        // ─── RENDER: DASHBOARD ────────────────────────────────────────
         function renderDashboard() {
-            const btnDisabled = !window.AppState.openRouterKey ? 'opacity-50 cursor-not-allowed' : '';
-            const areas = calculateStruggleAreas();
-            
-            let pastExamsHtml = window.AppState.pastExams.length === 0 
+            const btnDisabled  = !window.AppState.openRouterKey ? 'opacity-50 cursor-not-allowed' : '';
+            const areas        = calculateStruggleAreas();
+            const totalExams   = window.AppState.pastExams.length;
+            const passCount    = window.AppState.pastExams.filter(e => e.status === 'pass').length;
+            const passRate     = totalExams > 0 ? Math.round((passCount / totalExams) * 100) : null;
+
+            const recentExamsHtml = totalExams === 0
                 ? '<p class="text-gray-500 text-sm italic">No exams completed yet.</p>'
                 : window.AppState.pastExams.slice(0, 5).map(e => `
                     <div class="flex justify-between items-center py-2 border-b border-gray-100 last:border-0">
-                        <span class="text-sm font-bold ${e.status === 'pass' ? 'text-green-700' : 'text-red-700'}">${e.status.toUpperCase()}</span>
+                        <div class="flex items-center gap-2">
+                            <span class="font-bold text-sm ${e.status === 'pass' ? 'text-green-700' : 'text-red-700'}">${e.status.toUpperCase()}</span>
+                            <span class="text-xs text-gray-500">${e.history ? e.history.length : '?'} items</span>
+                        </div>
                         <span class="text-xs text-gray-500">${new Date(e.endTime).toLocaleDateString()}</span>
                     </div>`).join('');
 
-            let struggleAreasHtml = areas.length === 0
-                ? '<p class="text-gray-500 text-sm italic">Take an exam to view your struggle areas.</p>'
-                : areas.slice(0, 4).map(a => `
+            const heatmapHtml = areas.map(a => {
+                if (a.pct === null) {
+                    return `
                     <div class="mb-3">
                         <div class="flex justify-between text-xs font-bold mb-1">
-                            <span class="text-black truncate pr-2">${a.category}</span>
-                            <span class="${a.pct < 75 ? 'text-red-600' : 'text-green-600'}">${a.pct}%</span>
+                            <span class="text-gray-500 truncate pr-2">${a.category}</span>
+                            <span class="text-gray-400">No data</span>
                         </div>
-                        <div class="w-full bg-gray-200 rounded-full h-1.5">
-                            <div class="${a.pct < 75 ? 'bg-red-500' : 'bg-green-500'} h-1.5 rounded-full" style="width: ${a.pct}%"></div>
-                        </div>
-                    </div>`).join('');
+                        <div class="w-full bg-gray-100 rounded-full h-2"><div class="bg-gray-300 h-2 rounded-full" style="width:0%"></div></div>
+                    </div>`;
+                }
+                const barColor  = a.isFocusArea ? 'bg-red-500' : (a.pct >= 85 ? 'bg-green-600' : 'bg-blue-500');
+                const pctLabel  = a.isFocusArea
+                    ? `<span class="focus-area-badge text-xs px-1 rounded font-bold">${a.pct}% ⚠ Focus Area</span>`
+                    : `<span class="strength-badge text-xs px-1 rounded font-bold">${a.pct}%</span>`;
+                return `
+                <div class="mb-3">
+                    <div class="flex justify-between items-center text-xs font-bold mb-1">
+                        <span class="text-black truncate pr-2">${a.category}</span>
+                        ${pctLabel}
+                    </div>
+                    <div class="w-full bg-gray-200 rounded-full h-2">
+                        <div class="${barColor} h-2 rounded-full heatmap-bar" style="width:${a.pct}%"></div>
+                    </div>
+                    <p class="text-xs text-gray-400 mt-0.5">${a.total} question${a.total !== 1 ? 's' : ''}</p>
+                </div>`;
+            }).join('');
 
             return `
             <div class="max-w-5xl mx-auto p-4 w-full flex-grow mt-8 animate-fade-in">
@@ -833,29 +1109,53 @@
                     </div>
                     <button onclick="logout()" class="text-[#1A365D] hover:underline font-bold text-sm">Logout</button>
                 </div>
-                
-                <div class="bg-white p-10 border border-gray-300 shadow-sm mb-8 text-center rounded-sm">
+
+                ${totalExams > 0 ? `
+                <div class="grid grid-cols-3 gap-3 mb-6">
+                    <div class="bg-white border border-gray-200 rounded-sm p-4 text-center shadow-sm">
+                        <p class="text-2xl font-black text-[#1A365D]">${totalExams}</p>
+                        <p class="text-xs text-gray-500 font-bold uppercase mt-1">Exams Taken</p>
+                    </div>
+                    <div class="bg-white border border-gray-200 rounded-sm p-4 text-center shadow-sm">
+                        <p class="text-2xl font-black ${passRate >= 50 ? 'text-green-700' : 'text-red-700'}">${passRate}%</p>
+                        <p class="text-xs text-gray-500 font-bold uppercase mt-1">Pass Rate</p>
+                    </div>
+                    <div class="bg-white border border-gray-200 rounded-sm p-4 text-center shadow-sm">
+                        <p class="text-2xl font-black text-amber-600">${areas.filter(a => a.isFocusArea).length}</p>
+                        <p class="text-xs text-gray-500 font-bold uppercase mt-1">Focus Areas</p>
+                    </div>
+                </div>` : ''}
+
+                <div class="bg-white p-10 border border-gray-300 shadow-sm mb-6 text-center rounded-sm">
                     <h2 class="text-2xl font-bold text-black mb-2 tracking-tight">Infinite CAT Engine</h2>
-                    <p class="text-gray-600 mb-8 font-semibold text-sm">2026 NGN Simulation (85-150 Items)</p>
-                    <button onclick="startNewExam()" class="nclex-btn-blue px-10 py-4 font-bold text-lg w-full max-w-md ${btnDisabled}">
+                    <p class="text-gray-600 mb-2 font-semibold text-sm">2026 NCSBN Blueprint · NGN Simulation · 85–145 Items</p>
+                    <p class="text-gray-400 text-xs mb-8">Item types: MC, SATA, Bowtie, Highlight, Matrix, Drop-Down, Drag-and-Drop, Trend</p>
+                    <button onclick="startNewExam()" class="nclex-btn-blue px-10 py-4 font-bold text-lg w-full max-w-md ${btnDisabled}" ${!window.AppState.openRouterKey ? 'disabled' : ''}>
                         Begin NCLEX Examination
                     </button>
-                    ${!window.AppState.openRouterKey ? '<p class="text-red-600 font-bold text-sm mt-4"><i data-feather="alert-triangle" class="w-4 h-4 inline mb-1"></i> System Offline: AI Engine configurations missing in Database.</p>' : ''}
+                    ${!window.AppState.openRouterKey ? '<p class="text-red-600 font-bold text-sm mt-4">⚠ System Offline: AI Engine configurations missing from database.</p>' : ''}
                 </div>
-                
+
                 <div class="grid md:grid-cols-2 gap-6">
                     <div class="bg-white p-6 border border-gray-300 shadow-sm rounded-sm">
-                        <h3 class="font-bold text-lg text-[#1A365D] border-b border-gray-300 pb-2 mb-4 flex items-center gap-2"><i data-feather="file-text" class="w-5 h-5"></i> Recent Performance</h3>
-                        ${pastExamsHtml}
+                        <h3 class="font-bold text-lg text-[#1A365D] border-b border-gray-300 pb-2 mb-4 flex items-center gap-2">
+                            <i data-feather="file-text" class="w-5 h-5"></i> Recent Exams
+                        </h3>
+                        ${recentExamsHtml}
                     </div>
                     <div class="bg-white p-6 border border-gray-300 shadow-sm rounded-sm">
-                        <h3 class="font-bold text-lg text-[#1A365D] border-b border-gray-300 pb-2 mb-4 flex items-center gap-2"><i data-feather="bar-chart-2" class="w-5 h-5"></i> Lowest Categories</h3>
-                        ${struggleAreasHtml}
+                        <h3 class="font-bold text-lg text-[#1A365D] border-b border-gray-300 pb-2 mb-4 flex items-center gap-2">
+                            <i data-feather="bar-chart-2" class="w-5 h-5"></i> Performance Heatmap
+                        </h3>
+                        ${heatmapHtml}
+                        ${totalExams === 0 ? '<p class="text-gray-400 text-xs italic mt-2">Complete an exam to see your category breakdown.</p>' : ''}
+                        <p class="text-xs text-gray-400 mt-3 border-t border-gray-100 pt-2">⚠ Focus Areas = categories below 70% accuracy</p>
                     </div>
                 </div>
             </div>`;
         }
 
+        // ─── RENDER: EXAM ─────────────────────────────────────────────
         function getExamLayout() {
             const session = window.AppState.examSession;
             let mainContent = '';
@@ -864,13 +1164,13 @@
                 mainContent = `
                 <div class="flex flex-col items-center justify-center h-[500px] bg-white">
                     <div class="w-10 h-10 border-4 border-[#1A365D] border-t-transparent rounded-full spinner mb-4"></div>
-                    <p class="text-black font-bold tracking-wide">Loading...</p>
-                </div>`;
+                    <p class="text-black font-bold tracking-wide">Generating next item...</p>
+                                    </div>`;
             } else if (session.currentQuestion) {
                 const qTextFormatted = session.currentQuestion.text.replace(/\n/g, '<br>');
                 mainContent = `
                 <div class="p-8 bg-white min-h-[500px]">
-                    <div class="mb-8 flex flex-col">
+                    <div class="mb-8">
                         <h2 id="question-text" class="text-base text-black leading-relaxed font-normal">${qTextFormatted}</h2>
                     </div>
                     <div id="options-container" class="ml-2"></div>
@@ -886,23 +1186,23 @@
                             <span class="text-[9px] mt-1 text-white font-bold">Calc</span>
                         </div>
                     </div>
-                    <div class="flex items-center mr-4">
-                        <div class="flex flex-col items-end">
-                            <span class="text-[10px] text-white uppercase tracking-widest font-bold">Time Remaining</span>
-                            <span id="exam-timer" class="font-bold text-lg text-white">${formatTime(session.timeRemaining)}</span>
-                        </div>
+                    <div class="flex items-center mr-4 flex-col items-end">
+                        <span class="text-[10px] text-white uppercase tracking-widest font-bold">Time Remaining</span>
+                        <span id="exam-timer" class="font-bold text-lg text-white">${formatTime(session.timeRemaining)}</span>
                     </div>
                 </header>
 
                 <div class="bg-[#f0f0f0] p-1 px-4 flex justify-between items-center border-b border-gray-400">
-                    <span class="text-black font-bold text-sm">Question: ${session.questionsAsked.length + 1}</span>
+                    <div class="flex items-center gap-4">
+                        <span class="text-black font-bold text-sm">Item ${session.questionsAsked.length + 1}</span>
+                        <span class="text-gray-500 text-xs">(Min: ${MIN_QUESTIONS} · Max: ${MAX_QUESTIONS})</span>
+                    </div>
                     <button onclick="requestExitExam()" class="text-[#1A365D] hover:underline text-sm font-bold">End Exam</button>
                 </div>
 
                 <main class="flex-grow flex justify-center items-start pt-6 px-4 pb-16">
                     <div class="w-full max-w-5xl border border-gray-300 bg-white flex flex-col shadow-sm rounded-md overflow-hidden">
                         ${mainContent}
-                        
                         <div class="nclex-footer p-4 flex justify-end">
                             <button id="next-btn" onclick="handleNextQuestion()" disabled class="nclex-btn-disabled px-10 py-2 font-bold text-sm transition-colors">
                                 Next
@@ -910,168 +1210,258 @@
                         </div>
                     </div>
                 </main>
-            </div>
-            `;
+            </div>`;
         }
 
         window.renderExamOptions = () => {
             if (window.AppState.isGenerating) return;
-            const session = window.AppState.examSession;
-            const q = session.currentQuestion;
+            const session   = window.AppState.examSession;
+            const q         = session.currentQuestion;
             const container = document.getElementById('options-container');
-            const nextBtn = document.getElementById('next-btn');
-
-            if(!container) return;
+            const nextBtn   = document.getElementById('next-btn');
+            if (!container || !q) return;
 
             let optionsHTML = '';
-            let canSubmit = false;
-            
-            if (q.type === 'mc' || q.type === 'sata') {
-                const isSata = q.type === 'sata';
-                
-                if (isSata) {
-                    optionsHTML += `<p class="font-bold text-black mb-4">Select all that apply.</p><div class="space-y-3">`;
-                } else {
-                    optionsHTML += `<div class="space-y-3">`;
-                }
+            let canSubmit   = false;
 
+            if (q.type === 'mc' || q.type === 'trend') {
+                optionsHTML += `<div class="space-y-3">`;
                 q.options.forEach((opt, idx) => {
                     const isSelected = session.selectedAnswers.includes(idx);
-                    const inputMarker = isSata 
-                        ? `<div class="w-5 h-5 border-2 border-black flex items-center justify-center bg-white flex-shrink-0 mt-0.5">${isSelected ? '<div class="w-3 h-3 bg-black"></div>' : ''}</div>`
-                        : `<div class="w-5 h-5 border-2 border-black rounded-full flex items-center justify-center bg-white flex-shrink-0 mt-0.5">${isSelected ? '<div class="w-2.5 h-2.5 bg-black rounded-full"></div>' : ''}</div>`;
-
+                    const inputMarker = `<div class="w-5 h-5 border-2 border-black rounded-full flex items-center justify-center bg-white flex-shrink-0 mt-0.5">${isSelected ? '<div class="w-2.5 h-2.5 bg-black rounded-full"></div>' : ''}</div>`;
                     optionsHTML += `
-                        <label class="flex items-start gap-3 cursor-pointer p-1 group">
-                            ${inputMarker}
-                            <input type="checkbox" class="hidden" onclick="toggleAnswer(${idx})">
-                            <span class="text-black text-base font-normal">${opt}</span>
-                        </label>
-                    `;
+                    <label onclick="toggleAnswer(${idx})" class="flex items-start gap-3 cursor-pointer p-2 rounded hover:bg-gray-50 ${isSelected ? 'bg-blue-50 border border-blue-200' : 'border border-transparent'}">
+                        ${inputMarker}
+                        <span class="text-black text-base font-normal">${opt}</span>
+                    </label>`;
                 });
                 optionsHTML += `</div>`;
                 canSubmit = session.selectedAnswers.length > 0;
-            } 
-            else if (q.type === 'highlight') {
-                optionsHTML += `<div class="bg-[#f9f9f9] border border-gray-300 p-6 text-base leading-loose cursor-pointer select-none">`;
+
+            } else if (q.type === 'sata') {
+                optionsHTML += `<p class="font-bold text-black mb-4 text-sm bg-[#fff8dc] border-l-4 border-amber-400 px-3 py-2">SELECT ALL THAT APPLY — Choose all options that apply.</p><div class="space-y-3">`;
                 q.options.forEach((opt, idx) => {
                     const isSelected = session.selectedAnswers.includes(idx);
-                    const highlightClass = isSelected ? 'bg-yellow-300 font-bold border-b-2 border-black' : 'hover:bg-gray-200 transition-colors';
-                    optionsHTML += `<span onclick="toggleAnswer(${idx})" class="p-1 rounded ${highlightClass}">${opt}</span> `;
+                    const inputMarker = `<div class="w-5 h-5 border-2 border-black flex items-center justify-center bg-white flex-shrink-0 mt-0.5">${isSelected ? '<div class="w-3 h-3 bg-black"></div>' : ''}</div>`;
+                    optionsHTML += `
+                    <label onclick="toggleAnswer(${idx})" class="flex items-start gap-3 cursor-pointer p-2 rounded hover:bg-gray-50 ${isSelected ? 'bg-blue-50 border border-blue-200' : 'border border-transparent'}">
+                        ${inputMarker}
+                        <span class="text-black text-base font-normal">${opt}</span>
+                    </label>`;
                 });
                 optionsHTML += `</div>`;
                 canSubmit = session.selectedAnswers.length > 0;
-            }
-            else if (q.type === 'bowtie') {
+
+            } else if (q.type === 'highlight') {
+                optionsHTML += `<div class="bg-[#f9f9f9] border border-gray-300 p-6 text-base leading-loose cursor-pointer select-none rounded">`;
+                q.options.forEach((opt, idx) => {
+                    const isSelected    = session.selectedAnswers.includes(idx);
+                    const highlightClass = isSelected ? 'bg-yellow-300 font-bold border-b-2 border-black' : 'hover:bg-gray-200 transition-colors';
+                    optionsHTML += `<span onclick="toggleAnswer(${idx})" class="p-1 rounded ${highlightClass}">${opt}</span>`;
+                });
+                optionsHTML += `</div>`;
+                canSubmit = session.selectedAnswers.length > 0;
+
+            } else if (q.type === 'bowtie') {
+                const sel = session.selectedAnswers;
                 optionsHTML += `
-                <div class="bg-[#f9f9f9] p-4 border border-gray-400">
-                    <p class="font-bold text-black mb-4 text-center text-sm">Complete the diagram by selecting from the choices below to specify what condition the client is most likely experiencing, 2 actions the nurse should take, and 2 parameters to monitor.</p>
-                    
+                <div class="bg-[#f9f9f9] p-4 border border-gray-400 rounded">
+                    <p class="font-bold text-black mb-4 text-center text-sm">Complete the clinical diagram: select the CONDITION (1), ACTIONS (2), and PARAMETERS (2).</p>
                     <div class="grid grid-cols-3 gap-4">
-                        <div class="bg-white border border-gray-400 p-2">
-                            <h4 class="font-bold text-center border-b border-gray-400 pb-1 mb-2 text-sm bg-[#e0e0e0]">Actions to Take</h4>
-                            <p class="text-xs text-gray-600 text-center mb-2">Select 2 (${session.selectedAnswers.actions.length}/2)</p>
+                        <div class="bg-white border border-gray-400 p-2 rounded">
+                            <h4 class="font-bold text-center border-b border-gray-400 pb-1 mb-2 text-sm bg-[#e0e0e0] -mx-2 px-2">Actions to Take</h4>
+                            <p class="text-xs text-gray-600 text-center mb-2">${sel.actions.length}/2 selected</p>
                             <div class="space-y-1">
                                 ${q.bowtie_data.actions.map((opt, idx) => {
-                                    const isSel = session.selectedAnswers.actions.includes(idx);
-                                    return `<div onclick="toggleAnswer(${idx}, 'actions')" class="cursor-pointer text-sm p-2 border border-black ${isSel ? 'bg-[#1A365D] text-white font-bold' : 'bg-white hover:bg-gray-100'}">${opt}</div>`;
+                                    const isSel = sel.actions.includes(idx);
+                                    return `<div onclick="toggleAnswer(${idx}, 'actions')" class="cursor-pointer text-sm p-2 border border-black rounded ${isSel ? 'bg-[#1A365D] text-white font-bold' : 'bg-white hover:bg-gray-100'}">${opt}</div>`;
                                 }).join('')}
                             </div>
                         </div>
-
-                        <div class="bg-white border-2 border-black p-2 shadow-inner">
-                            <h4 class="font-bold text-center border-b border-black pb-1 mb-2 text-sm bg-[#e0e0e0]">Potential Condition</h4>
-                            <p class="text-xs text-gray-600 text-center mb-2">Select 1 (${session.selectedAnswers.condition.length}/1)</p>
+                        <div class="bg-white border-2 border-black p-2 shadow-inner rounded">
+                            <h4 class="font-bold text-center border-b border-black pb-1 mb-2 text-sm bg-[#e0e0e0] -mx-2 px-2">Potential Condition</h4>
+                            <p class="text-xs text-gray-600 text-center mb-2">${sel.condition.length}/1 selected</p>
                             <div class="space-y-1">
                                 ${q.bowtie_data.condition.map((opt, idx) => {
-                                    const isSel = session.selectedAnswers.condition.includes(idx);
-                                    return `<div onclick="toggleAnswer(${idx}, 'condition')" class="cursor-pointer text-sm p-2 border border-black ${isSel ? 'bg-[#1A365D] text-white font-bold' : 'bg-white hover:bg-gray-100'}">${opt}</div>`;
+                                    const isSel = sel.condition.includes(idx);
+                                    return `<div onclick="toggleAnswer(${idx}, 'condition')" class="cursor-pointer text-sm p-2 border border-black rounded ${isSel ? 'bg-[#1A365D] text-white font-bold' : 'bg-white hover:bg-gray-100'}">${opt}</div>`;
                                 }).join('')}
                             </div>
                         </div>
-
-                        <div class="bg-white border border-gray-400 p-2">
-                            <h4 class="font-bold text-center border-b border-gray-400 pb-1 mb-2 text-sm bg-[#e0e0e0]">Parameters to Monitor</h4>
-                            <p class="text-xs text-gray-600 text-center mb-2">Select 2 (${session.selectedAnswers.parameters.length}/2)</p>
+                        <div class="bg-white border border-gray-400 p-2 rounded">
+                            <h4 class="font-bold text-center border-b border-gray-400 pb-1 mb-2 text-sm bg-[#e0e0e0] -mx-2 px-2">Parameters to Monitor</h4>
+                            <p class="text-xs text-gray-600 text-center mb-2">${sel.parameters.length}/2 selected</p>
                             <div class="space-y-1">
                                 ${q.bowtie_data.parameters.map((opt, idx) => {
-                                    const isSel = session.selectedAnswers.parameters.includes(idx);
-                                    return `<div onclick="toggleAnswer(${idx}, 'parameters')" class="cursor-pointer text-sm p-2 border border-black ${isSel ? 'bg-[#1A365D] text-white font-bold' : 'bg-white hover:bg-gray-100'}">${opt}</div>`;
+                                    const isSel = sel.parameters.includes(idx);
+                                    return `<div onclick="toggleAnswer(${idx}, 'parameters')" class="cursor-pointer text-sm p-2 border border-black rounded ${isSel ? 'bg-[#1A365D] text-white font-bold' : 'bg-white hover:bg-gray-100'}">${opt}</div>`;
                                 }).join('')}
                             </div>
                         </div>
                     </div>
                 </div>`;
-                
-                canSubmit = (session.selectedAnswers.actions.length === 2 && session.selectedAnswers.condition.length === 1 && session.selectedAnswers.parameters.length === 2);
+                canSubmit = sel.actions.length === 2 && sel.condition.length === 1 && sel.parameters.length === 2;
+
+            } else if (q.type === 'matrix_mc') {
+                optionsHTML += `<p class="font-bold text-black mb-4 text-sm bg-[#fff8dc] border-l-4 border-amber-400 px-3 py-2">For each parameter below, select whether it is relevant to the clinical scenario.</p>`;
+                optionsHTML += `<div class="space-y-2">`;
+                q.matrix_data.parameters.forEach((param, idx) => {
+                    const isSelected = session.selectedAnswers.includes(idx);
+                    optionsHTML += `
+                    <label onclick="toggleAnswer(${idx})" class="flex items-center gap-3 cursor-pointer p-3 rounded border ${isSelected ? 'bg-blue-50 border-blue-300' : 'bg-white border-gray-300 hover:bg-gray-50'}">
+                        <div class="w-5 h-5 border-2 border-black flex items-center justify-center bg-white flex-shrink-0">${isSelected ? '<div class="w-3 h-3 bg-black"></div>' : ''}</div>
+                        <span class="text-black text-sm font-normal">${param}</span>
+                        <span class="ml-auto text-xs font-bold ${isSelected ? 'text-blue-700' : 'text-gray-400'}">${isSelected ? 'RELEVANT' : 'Click to mark relevant'}</span>
+                    </label>`;
+                });
+                optionsHTML += `</div>`;
+                canSubmit = session.selectedAnswers.length > 0;
+
+            } else if (q.type === 'drop_down') {
+                const numBlanks = q.dropdown_options.length;
+                optionsHTML += `<p class="font-bold text-black mb-4 text-sm bg-[#fff8dc] border-l-4 border-amber-400 px-3 py-2">Select the correct option for each dropdown.</p>`;
+                optionsHTML += `<div class="space-y-4">`;
+                for (let i = 0; i < numBlanks; i++) {
+                    const currentVal = session.selectedAnswers[i];
+                    optionsHTML += `
+                    <div class="flex items-center gap-3">
+                        <span class="text-sm font-bold text-gray-700 w-20">Blank ${i + 1}:</span>
+                        <select onchange="toggleAnswer(this.value); setDropdownBlank(${i})" class="flex-1 nclex-input-box px-3 py-2 text-sm">
+                            <option value="">-- Select --</option>
+                            ${q.dropdown_options[i].map((opt, optIdx) => `
+                                <option value="${optIdx}" ${currentVal === optIdx ? 'selected' : ''}>${opt}</option>
+                            `).join('')}
+                        </select>
+                    </div>`;
+                }
+                optionsHTML += `</div>`;
+                canSubmit = session.selectedAnswers.length >= numBlanks && session.selectedAnswers.slice(0, numBlanks).every(s => s !== null && s !== undefined);
+
+            } else if (q.type === 'drag_drop') {
+                optionsHTML += `<p class="font-bold text-black mb-4 text-sm bg-[#fff8dc] border-l-4 border-amber-400 px-3 py-2">Prioritize the nursing actions. Use the arrows to reorder (top = highest priority).</p>`;
+                optionsHTML += `<div class="space-y-2">`;
+                session.selectedAnswers.forEach((itemIdx, rank) => {
+                    const item = q.drag_drop_items[itemIdx];
+                    optionsHTML += `
+                    <div class="flex items-center gap-3 p-3 bg-white border border-gray-300 rounded">
+                        <span class="w-8 h-8 flex items-center justify-center bg-[#1A365D] text-white font-bold rounded-full text-sm">${rank + 1}</span>
+                        <span class="flex-1 text-sm font-normal text-black">${item}</span>
+                        <div class="flex flex-col gap-1">
+                            <button onclick="moveDragItem(${rank}, -1)" class="text-xs px-2 py-0.5 bg-gray-200 hover:bg-gray-300 rounded font-bold" ${rank === 0 ? 'disabled' : ''}>▲</button>
+                            <button onclick="moveDragItem(${rank}, 1)" class="text-xs px-2 py-0.5 bg-gray-200 hover:bg-gray-300 rounded font-bold" ${rank === session.selectedAnswers.length - 1 ? 'disabled' : ''}>▼</button>
+                        </div>
+                    </div>`;
+                });
+                optionsHTML += `</div>`;
+                canSubmit = session.selectedAnswers.length === q.drag_drop_items.length;
             }
 
             container.innerHTML = optionsHTML;
             feather.replace();
 
             if (canSubmit) {
-                nextBtn.disabled = false;
+                nextBtn.disabled  = false;
                 nextBtn.className = "nclex-btn-blue px-12 py-2 font-bold text-base cursor-pointer";
             } else {
-                nextBtn.disabled = true;
+                nextBtn.disabled  = true;
                 nextBtn.className = "nclex-btn-disabled px-12 py-2 font-bold text-base cursor-not-allowed";
             }
         };
 
+        // ─── RENDER: RESULTS ──────────────────────────────────────────
         function renderResults() {
             const session = window.AppState.examSession;
-            const isPass = session.status === 'pass';
-            
+            const isPass  = session.status === 'pass';
+
+            const examAreas     = calculateExamStruggleAreas(session.history);
+            const focusAreas    = examAreas.filter(a => a.isFocusArea && a.total > 0);
+            const strengthAreas = examAreas.filter(a => !a.isFocusArea && a.pct !== null);
+
+            const heatmapHtml = examAreas.map(a => {
+                if (a.pct === null || a.total === 0) {
+                    return `
+                    <div class="flex items-center gap-3 mb-2">
+                        <span class="text-xs text-gray-400 w-48 truncate">${a.category}</span>
+                        <div class="flex-grow bg-gray-100 rounded h-3"></div>
+                        <span class="text-xs text-gray-300 w-8 text-right">—</span>
+                    </div>`;
+                }
+                const barColor = a.isFocusArea ? 'bg-red-500' : (a.pct >= 85 ? 'bg-green-600' : 'bg-blue-500');
+                const badge    = a.isFocusArea
+                    ? `<span class="focus-area-badge text-xs px-1 rounded font-bold">${a.pct}%</span>`
+                    : `<span class="strength-badge text-xs px-1 rounded font-bold">${a.pct}%</span>`;
+                return `
+                <div class="flex items-center gap-3 mb-2">
+                    <span class="text-xs font-bold text-black w-48 truncate">${a.category}</span>
+                    <div class="flex-grow bg-gray-200 rounded h-3 overflow-hidden">
+                        <div class="${barColor} h-3 rounded heatmap-bar" style="width:${a.pct}%"></div>
+                    </div>
+                    ${badge}
+                </div>`;
+            }).join('');
+
             const reviewHTML = session.history.map((h, i) => `
-                <div class="mb-6 bg-white p-4 border border-gray-400">
-                    <div class="flex items-start gap-3">
-                        <div class="mt-1 flex-shrink-0">
-                            ${h.score === 1.0 ? '<i data-feather="check-square" class="text-green-700"></i>' : (h.score > 0 ? '<i data-feather="minus-square" class="text-amber-500"></i>' : '<i data-feather="x-square" class="text-red-700"></i>')}
+            <div class="mb-4 bg-white p-4 border border-gray-400 rounded">
+                <div class="flex items-start gap-3">
+                    <div class="mt-1 flex-shrink-0">
+                        ${h.score === 1.0 ? '<i data-feather="check-square" class="text-green-700 w-5 h-5"></i>' : (h.score > 0 ? '<i data-feather="minus-square" class="text-amber-500 w-5 h-5"></i>' : '<i data-feather="x-square" class="text-red-700 w-5 h-5"></i>')}
+                    </div>
+                    <div class="flex-grow">
+                        <div class="flex justify-between items-center mb-1 flex-wrap gap-2">
+                            <p class="font-bold text-black text-sm">Item ${i + 1} <span class="text-gray-500 font-normal ml-2">${h.category}</span></p>
+                            <div class="flex gap-2 items-center">
+                                <span class="text-xs text-gray-400">${h.ncjmmLayer || ''}</span>
+                                <span class="text-xs font-bold px-2 py-0.5 rounded ${h.score === 1.0 ? 'bg-green-100 text-green-800' : (h.score > 0 ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-800')}">
+                                    ${(h.score * 100).toFixed(0)}% Credit
+                                </span>
+                            </div>
                         </div>
-                        <div class="flex-grow">
-                            <div class="flex justify-between items-center mb-1">
-                                <p class="font-bold text-black">Question ${i + 1} <span class="text-gray-600 font-normal text-sm ml-2">(${h.category})</span></p>
-                                <span class="text-xs font-bold ${h.score === 1.0 ? 'text-green-700' : (h.score > 0 ? 'text-amber-600' : 'text-red-700')}">${(h.score * 100).toFixed(0)}% Credit</span>
-                            </div>
-                            <p class="text-black mb-3 text-sm italic">${h.text.replace(/\n/g, '<br>').substring(0, 200)}...</p>
-                            <div class="bg-[#f0f0f0] border-l-4 border-[#1A365D] p-3">
-                                <p class="text-[#1A365D] font-bold text-sm mb-1">Rationale / Explanation:</p>
-                                <p class="text-black text-sm">${h.rationale || 'No rationale provided by the engine.'}</p>
-                            </div>
+                        <p class="text-black mb-3 text-sm italic">${h.text.replace(/\n/g, '<br>').substring(0, 250)}${h.text.length > 250 ? '...' : ''}</p>
+                        <div class="bg-[#f0f4ff] border-l-4 border-[#1A365D] p-3 rounded-r">
+                            <p class="text-[#1A365D] font-bold text-sm mb-1">Rationale:</p>
+                            <p class="text-black text-sm">${h.rationale || 'No rationale provided by the engine.'}</p>
                         </div>
                     </div>
                 </div>
-            `).join('');
+            </div>`).join('');
 
             return `
-            <div class="min-h-screen nclex-bg p-6 flex flex-col items-center">
+            <div class="min-h-screen nclex-bg p-4 md:p-6 flex flex-col items-center animate-fade-in">
                 <div class="w-full max-w-4xl bg-white border-2 border-black shadow-[4px_4px_0px_rgba(0,0,0,0.1)]">
-                    
-                    <div class="bg-white border-b-2 border-black p-6 flex justify-between items-end">
+
+                    <div class="bg-white border-b-2 border-black p-6 flex justify-between items-end flex-wrap gap-4">
                         <div>
                             <h1 class="text-2xl font-bold text-black tracking-tight">Candidate Performance Report (CPR)</h1>
-                            <p class="text-sm text-gray-700 mt-1">Computerized Adaptive Testing Results</p>
+                            <p class="text-sm text-gray-700 mt-1">2026 NGN Computerized Adaptive Testing Results</p>
                         </div>
                         <div class="text-right">
-                            <p class="text-xs text-gray-600 uppercase font-bold">Items Evaluated</p>
+                            <p class="text-xs text-gray-600 uppercase font-bold">Items Administered</p>
                             <p class="font-bold text-xl text-black">${session.questionsAsked.length}</p>
                         </div>
                     </div>
 
                     <div class="p-8 flex flex-col items-center justify-center border-b-2 border-black ${isPass ? 'bg-green-50' : 'bg-red-50'}">
-                        <h2 class="text-4xl font-black tracking-widest ${isPass ? 'text-green-800' : 'text-red-800'}">
-                            ${isPass ? 'PASS' : 'FAIL'}
+                        <h2 class="text-5xl font-black tracking-widest ${isPass ? 'text-green-800' : 'text-red-800'}">
+                            ${isPass ? '✓ PASS' : '✗ FAIL'}
                         </h2>
-                        <p class="text-black mt-2 text-center max-w-lg font-bold">
-                            The CAT algorithm evaluated your performance and determined your competency with a 95% confidence interval.
+                        <p class="text-black mt-3 text-center max-w-lg font-bold text-sm">
+                            The CAT algorithm evaluated your performance across ${session.questionsAsked.length} items using a 95% confidence interval rule.
                         </p>
                     </div>
 
-                    <div class="p-6 bg-[#e0e0e0]">
-                        <h3 class="text-lg font-bold text-black mb-4 border-b border-gray-400 pb-2">Item Review & Rationales</h3>
-                        <div class="space-y-2">
-                            ${reviewHTML}
+                    <div class="p-6 bg-[#f8f9ff] border-b-2 border-black">
+                        <h3 class="text-lg font-bold text-black mb-1">📊 Struggle Analysis Dashboard</h3>
+                        <p class="text-xs text-gray-500 mb-4">Per-category performance for this exam. Categories below 70% are flagged as Focus Areas.</p>
+                        ${heatmapHtml}
+                        <div class="flex gap-4 mt-3 flex-wrap">
+                            ${focusAreas.length > 0 ? `<div class="focus-area-badge px-3 py-1 rounded text-xs font-bold">⚠ ${focusAreas.length} Focus Area${focusAreas.length !== 1 ? 's' : ''}: ${focusAreas.map(a => a.category.split(' ')[0]).join(', ')}</div>` : ''}
+                            ${strengthAreas.length > 0 ? `<div class="strength-badge px-3 py-1 rounded text-xs font-bold">✓ ${strengthAreas.length} Area${strengthAreas.length !== 1 ? 's' : ''} above 70%</div>` : ''}
                         </div>
+                    </div>
+
+                    <div class="p-6 bg-[#e8e8e8] border-b-2 border-black">
+                        <h3 class="text-lg font-bold text-black mb-4">Item Review & Rationales</h3>
+                        <div>${reviewHTML}</div>
                     </div>
 
                     <div class="p-6 border-t-2 border-black bg-white text-center">
@@ -1083,13 +1473,14 @@
             </div>`;
         }
 
+        // ─── MAIN RENDER ──────────────────────────────────────────────
         window.renderApp = () => {
             const appDiv = document.getElementById('app');
-            if (window.AppState.view === 'loading') appDiv.innerHTML = renderLoading();
-            else if (window.AppState.view === 'auth') appDiv.innerHTML = renderAuth();
+            if (window.AppState.view === 'loading')    appDiv.innerHTML = renderLoading();
+            else if (window.AppState.view === 'auth')  appDiv.innerHTML = renderAuth();
             else if (window.AppState.view === 'pending') appDiv.innerHTML = renderPending();
             else if (window.AppState.view === 'dashboard') appDiv.innerHTML = renderDashboard();
-            else if (window.AppState.view === 'exam') { appDiv.innerHTML = getExamLayout(); window.renderExamOptions(); }
+            else if (window.AppState.view === 'exam')  { appDiv.innerHTML = getExamLayout(); window.renderExamOptions(); }
             else if (window.AppState.view === 'results') appDiv.innerHTML = renderResults();
             feather.replace();
         };
